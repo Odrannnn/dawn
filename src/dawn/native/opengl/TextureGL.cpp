@@ -166,9 +166,18 @@ MaybeError AllocateTexture(const OpenGLFunctions& gl,
                                                           size.width, size.height));
                 break;
             case GL_TEXTURE_2D_MULTISAMPLE:
-                DAWN_GL_TRY_ALWAYS_CHECK(
-                    gl, TexStorage2DMultisample(target, samples, format.internalFormat, size.width,
-                                                size.height, true));
+                // glTexStorage2DMultisample is core in desktop GL 4.3 and in ES 3.1; below that
+                // glTexImage2DMultisample (core in 3.2/ES 3.1) allocates immutable multisampled
+                // storage as well.
+                if (gl.TexStorage2DMultisample != nullptr) {
+                    DAWN_GL_TRY_ALWAYS_CHECK(
+                        gl, TexStorage2DMultisample(target, samples, format.internalFormat,
+                                                    size.width, size.height, true));
+                } else {
+                    DAWN_GL_TRY_ALWAYS_CHECK(
+                        gl, TexImage2DMultisample(target, samples, format.internalFormat,
+                                                  size.width, size.height, true));
+                }
                 break;
             default:
                 DAWN_UNREACHABLE();
@@ -708,7 +717,15 @@ ResultOrError<Ref<TextureView>> TextureView::Create(
                          view->mRenderbufferHandle = 0;
                      } else if (view->mOwnsHandle == OwnsHandle::Yes) {
                          GLuint handle = 0;
-                         DAWN_ASSERT(gl.IsAtLeastGL(4, 3));
+                         // glTextureView is core in desktop OpenGL 4.3 and is loaded from
+                         // GL_ARB_texture_view when present. Without it there is no way to make a
+                         // distinct view, so report it instead of calling a null proc.
+                         DAWN_ASSERT(gl.IsAtLeastGL(4, 3) || gl.TextureView != nullptr);
+                         if (gl.TextureView == nullptr) {
+                             return DAWN_UNIMPLEMENTED_ERROR(
+                                 "Texture views require desktop OpenGL 4.3 or "
+                                 "GL_ARB_texture_view.");
+                         }
                          DAWN_GL_TRY(gl, GenTextures(1, &handle));
                          DAWN_GL_TRY(
                              gl, TextureView(handle, view->GetGLTarget(),

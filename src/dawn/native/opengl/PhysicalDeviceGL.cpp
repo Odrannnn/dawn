@@ -163,7 +163,17 @@ MaybeError PhysicalDevice::InitializeImpl() {
                             "GL_EXT_color_buffer_float is required for OpenGL ES 3.1.");
             break;
         case wgpu::BackendType::OpenGL:
-            DAWN_INVALID_IF(!mFunctions.IsAtLeastGL(4, 4), "Desktop OpenGL 4.4 is required.");
+            // 3.3 is the minimum for the graphics parts of the backend (sampler objects, instanced
+            // draws, integer varyings, GLSL 3.30). Compute resources are additionally reported as
+            // unavailable when the context is below 4.3 without the ARB extensions (see
+            // SupportsCompute). Below 4.2 layout(binding) in GLSL needs
+            // GL_ARB_shading_language_420pack, which the GLSL writer always emits.
+            DAWN_INVALID_IF(!mFunctions.IsAtLeastGL(3, 3), "Desktop OpenGL 3.3 is required.");
+            DAWN_INVALID_IF(!mFunctions.IsAtLeastGL(4, 2) &&
+                                !mFunctions.IsGLExtensionSupported(
+                                    "GL_ARB_shading_language_420pack"),
+                            "GL_ARB_shading_language_420pack is required for desktop OpenGL "
+                            "below 4.2.");
             break;
         default:
             DAWN_UNREACHABLE();
@@ -335,6 +345,10 @@ MaybeError PhysicalDevice::InitializeSupportedLimitsImpl(CombinedLimits* limits)
     const OpenGLFunctions& gl = mFunctions;
     GetDefaultLimitsForSupportedFeatureLevel(limits);
 
+    // Storage buffers, storage textures and compute workgroups do not exist on OpenGL 3.3 (nor on
+    // ES 3.0) without extensions, so none of the corresponding enums can be queried there.
+    const bool supportsCompute = gl.SupportsCompute();
+
     DAWN_TRY_ASSIGN(limits->v1.maxTextureDimension2D, Get(gl, GL_MAX_TEXTURE_SIZE));
     limits->v1.maxTextureDimension1D = limits->v1.maxTextureDimension2D;
     DAWN_TRY_ASSIGN(limits->v1.maxTextureDimension3D, Get(gl, GL_MAX_3D_TEXTURE_SIZE));
@@ -344,8 +358,6 @@ MaybeError PhysicalDevice::InitializeSupportedLimitsImpl(CombinedLimits* limits)
 
     DAWN_TRY_ASSIGN(limits->v1.maxDynamicUniformBuffersPerPipelineLayout,
                     Get(gl, GL_MAX_UNIFORM_BUFFER_BINDINGS));
-    DAWN_TRY_ASSIGN(limits->v1.maxDynamicStorageBuffersPerPipelineLayout,
-                    Get(gl, GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS));
 
     GLuint maxTextureImageUnits = 0, maxVertexTextureImageUnits = 0;
     DAWN_TRY_ASSIGN(maxTextureImageUnits, Get(gl, GL_MAX_TEXTURE_IMAGE_UNITS));
@@ -354,33 +366,76 @@ MaybeError PhysicalDevice::InitializeSupportedLimitsImpl(CombinedLimits* limits)
         std::min(maxTextureImageUnits, maxVertexTextureImageUnits);
 
     DAWN_TRY_ASSIGN(limits->v1.maxSamplersPerShaderStage, Get(gl, GL_MAX_TEXTURE_IMAGE_UNITS));
-    DAWN_TRY_ASSIGN(limits->v1.maxStorageBuffersPerShaderStage,
-                    Get(gl, GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS));
-    // TODO(crbug.com/dawn/1834): Note that OpenGLES allows an implementation to have zero vertex
-    // image uniforms, so this isn't technically correct for vertex shaders.
-    DAWN_TRY_ASSIGN(limits->v1.maxStorageTexturesPerShaderStage,
-                    Get(gl, GL_MAX_COMPUTE_IMAGE_UNIFORMS));
-    DAWN_TRY_ASSIGN(limits->compat.maxStorageTexturesInFragmentStage,
-                    Get(gl, GL_MAX_FRAGMENT_IMAGE_UNIFORMS));
-
-    DAWN_TRY_ASSIGN(limits->compat.maxStorageBuffersInFragmentStage,
-                    Get(gl, GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS));
-    DAWN_TRY_ASSIGN(limits->compat.maxStorageTexturesInVertexStage,
-                    Get(gl, GL_MAX_VERTEX_IMAGE_UNIFORMS));
-    DAWN_TRY_ASSIGN(limits->compat.maxStorageBuffersInVertexStage,
-                    Get(gl, GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS));
 
     DAWN_TRY_ASSIGN(limits->v1.maxUniformBuffersPerShaderStage,
                     Get(gl, GL_MAX_UNIFORM_BUFFER_BINDINGS));
     DAWN_TRY_ASSIGN(limits->v1.maxUniformBufferBindingSize, Get(gl, GL_MAX_UNIFORM_BLOCK_SIZE));
-    DAWN_TRY_ASSIGN(limits->v1.maxStorageBufferBindingSize,
-                    Get(gl, GL_MAX_SHADER_STORAGE_BLOCK_SIZE));
 
     DAWN_TRY_ASSIGN(limits->v1.minUniformBufferOffsetAlignment,
                     Get(gl, GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT));
-    DAWN_TRY_ASSIGN(limits->v1.minStorageBufferOffsetAlignment,
-                    Get(gl, GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT));
-    DAWN_TRY_ASSIGN(limits->v1.maxVertexBuffers, Get(gl, GL_MAX_VERTEX_ATTRIB_BINDINGS));
+
+    if (supportsCompute) {
+        DAWN_TRY_ASSIGN(limits->v1.maxDynamicStorageBuffersPerPipelineLayout,
+                        Get(gl, GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS));
+        DAWN_TRY_ASSIGN(limits->v1.maxStorageBuffersPerShaderStage,
+                        Get(gl, GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS));
+        // TODO(crbug.com/dawn/1834): Note that OpenGLES allows an implementation to have zero
+        // vertex image uniforms, so this isn't technically correct for vertex shaders.
+        DAWN_TRY_ASSIGN(limits->v1.maxStorageTexturesPerShaderStage,
+                        Get(gl, GL_MAX_COMPUTE_IMAGE_UNIFORMS));
+        DAWN_TRY_ASSIGN(limits->compat.maxStorageTexturesInFragmentStage,
+                        Get(gl, GL_MAX_FRAGMENT_IMAGE_UNIFORMS));
+        DAWN_TRY_ASSIGN(limits->compat.maxStorageBuffersInFragmentStage,
+                        Get(gl, GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS));
+        DAWN_TRY_ASSIGN(limits->compat.maxStorageTexturesInVertexStage,
+                        Get(gl, GL_MAX_VERTEX_IMAGE_UNIFORMS));
+        DAWN_TRY_ASSIGN(limits->compat.maxStorageBuffersInVertexStage,
+                        Get(gl, GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS));
+        DAWN_TRY_ASSIGN(limits->v1.maxStorageBufferBindingSize,
+                        Get(gl, GL_MAX_SHADER_STORAGE_BLOCK_SIZE));
+        DAWN_TRY_ASSIGN(limits->v1.minStorageBufferOffsetAlignment,
+                        Get(gl, GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT));
+
+        DAWN_TRY_ASSIGN(limits->v1.maxComputeWorkgroupStorageSize,
+                        Get(gl, GL_MAX_COMPUTE_SHARED_MEMORY_SIZE));
+        DAWN_TRY_ASSIGN(limits->v1.maxComputeInvocationsPerWorkgroup,
+                        Get(gl, GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS));
+        DAWN_TRY_ASSIGN(limits->v1.maxComputeWorkgroupSizeX,
+                        GetIndexed(gl, GL_MAX_COMPUTE_WORK_GROUP_SIZE, 0));
+        DAWN_TRY_ASSIGN(limits->v1.maxComputeWorkgroupSizeY,
+                        GetIndexed(gl, GL_MAX_COMPUTE_WORK_GROUP_SIZE, 1));
+        DAWN_TRY_ASSIGN(limits->v1.maxComputeWorkgroupSizeZ,
+                        GetIndexed(gl, GL_MAX_COMPUTE_WORK_GROUP_SIZE, 2));
+        GLint v[3];
+        DAWN_TRY_ASSIGN(v[0], GetIndexed(gl, GL_MAX_COMPUTE_WORK_GROUP_COUNT, 0));
+        DAWN_TRY_ASSIGN(v[1], GetIndexed(gl, GL_MAX_COMPUTE_WORK_GROUP_COUNT, 1));
+        DAWN_TRY_ASSIGN(v[2], GetIndexed(gl, GL_MAX_COMPUTE_WORK_GROUP_COUNT, 2));
+        limits->v1.maxComputeWorkgroupsPerDimension = std::min({v[0], v[1], v[2]});
+    } else {
+        // No storage buffers or textures, and no compute: report 0 so that validating them fails
+        // instead of allowing a binding that cannot be bound. maxStorageBufferBindingSize and
+        // minStorageBufferOffsetAlignment keep the defaults from the limits above.
+        limits->v1.maxStorageBuffersPerShaderStage = 0;
+        limits->v1.maxStorageTexturesPerShaderStage = 0;
+        limits->v1.maxDynamicStorageBuffersPerPipelineLayout = 0;
+        limits->compat.maxStorageBuffersInFragmentStage = 0;
+        limits->compat.maxStorageBuffersInVertexStage = 0;
+        limits->compat.maxStorageTexturesInFragmentStage = 0;
+        limits->compat.maxStorageTexturesInVertexStage = 0;
+        limits->v1.maxComputeWorkgroupStorageSize = 0;
+        limits->v1.maxComputeInvocationsPerWorkgroup = 0;
+        limits->v1.maxComputeWorkgroupSizeX = 0;
+        limits->v1.maxComputeWorkgroupSizeY = 0;
+        limits->v1.maxComputeWorkgroupSizeZ = 0;
+        limits->v1.maxComputeWorkgroupsPerDimension = 0;
+    }
+
+    // GL_MAX_VERTEX_ATTRIB_BINDINGS is core in desktop OpenGL 4.3 and ES 3.1 only.
+    if (gl.IsAtLeastGL(4, 3) || gl.IsAtLeastGLES(3, 1)) {
+        DAWN_TRY_ASSIGN(limits->v1.maxVertexBuffers, Get(gl, GL_MAX_VERTEX_ATTRIB_BINDINGS));
+    } else {
+        DAWN_TRY_ASSIGN(limits->v1.maxVertexBuffers, Get(gl, GL_MAX_VERTEX_ATTRIBS));
+    }
     limits->v1.maxBufferSize = kAssumedMaxBufferSize;
     // The code that handles adding the index buffer offset to first_index
     // used in drawIndexedIndirect can not handle a max buffer size larger than 4gig.
@@ -388,8 +443,22 @@ MaybeError PhysicalDevice::InitializeSupportedLimitsImpl(CombinedLimits* limits)
     static_assert(kAssumedMaxBufferSize < 0x100000000u);
 
     DAWN_TRY_ASSIGN(limits->v1.maxVertexAttributes, Get(gl, GL_MAX_VERTEX_ATTRIBS));
-    DAWN_TRY_ASSIGN(limits->v1.maxVertexBufferArrayStride, Get(gl, GL_MAX_VERTEX_ATTRIB_STRIDE));
-    DAWN_TRY_ASSIGN(limits->v1.maxInterStageShaderVariables, Get(gl, GL_MAX_VARYING_VECTORS));
+    // GL_MAX_VERTEX_ATTRIB_STRIDE is core in desktop OpenGL 4.4 and ES 3.1 only.
+    if (gl.IsAtLeastGL(4, 4) || gl.IsAtLeastGLES(3, 1)) {
+        DAWN_TRY_ASSIGN(limits->v1.maxVertexBufferArrayStride,
+                        Get(gl, GL_MAX_VERTEX_ATTRIB_STRIDE));
+    } else {
+        limits->v1.maxVertexBufferArrayStride = 2048;
+    }
+    // GL_MAX_VARYING_VECTORS is core in desktop OpenGL 4.1 and in ES; older desktop GL only has
+    // GL_MAX_VARYING_COMPONENTS (4 components per vector).
+    if (gl.IsAtLeastGL(4, 1) || gl.GetVersion().IsES()) {
+        DAWN_TRY_ASSIGN(limits->v1.maxInterStageShaderVariables, Get(gl, GL_MAX_VARYING_VECTORS));
+    } else {
+        GLint maxVaryingComponents = 0;
+        DAWN_TRY_ASSIGN(maxVaryingComponents, Get(gl, GL_MAX_VARYING_COMPONENTS));
+        limits->v1.maxInterStageShaderVariables = maxVaryingComponents / 4;
+    }
     // TODO(dawn:685, dawn:1448): Support higher values as ANGLE compiler always generates
     // additional shader varyings (gl_PointSize and dx_Position) on ANGLE D3D backends.
     limits->v1.maxInterStageShaderVariables =
@@ -404,21 +473,6 @@ MaybeError PhysicalDevice::InitializeSupportedLimitsImpl(CombinedLimits* limits)
     // the maximum number of attachments in order to make it a no-op.
     limits->v1.maxColorAttachmentBytesPerSample = 16 * maxColorAttachments;
 
-    DAWN_TRY_ASSIGN(limits->v1.maxComputeWorkgroupStorageSize,
-                    Get(gl, GL_MAX_COMPUTE_SHARED_MEMORY_SIZE));
-    DAWN_TRY_ASSIGN(limits->v1.maxComputeInvocationsPerWorkgroup,
-                    Get(gl, GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS));
-    DAWN_TRY_ASSIGN(limits->v1.maxComputeWorkgroupSizeX,
-                    GetIndexed(gl, GL_MAX_COMPUTE_WORK_GROUP_SIZE, 0));
-    DAWN_TRY_ASSIGN(limits->v1.maxComputeWorkgroupSizeY,
-                    GetIndexed(gl, GL_MAX_COMPUTE_WORK_GROUP_SIZE, 1));
-    DAWN_TRY_ASSIGN(limits->v1.maxComputeWorkgroupSizeZ,
-                    GetIndexed(gl, GL_MAX_COMPUTE_WORK_GROUP_SIZE, 2));
-    GLint v[3];
-    DAWN_TRY_ASSIGN(v[0], GetIndexed(gl, GL_MAX_COMPUTE_WORK_GROUP_COUNT, 0));
-    DAWN_TRY_ASSIGN(v[1], GetIndexed(gl, GL_MAX_COMPUTE_WORK_GROUP_COUNT, 1));
-    DAWN_TRY_ASSIGN(v[2], GetIndexed(gl, GL_MAX_COMPUTE_WORK_GROUP_COUNT, 2));
-    limits->v1.maxComputeWorkgroupsPerDimension = std::min({v[0], v[1], v[2]});
     limits->v1.maxImmediateSize = kMaxImmediateDataBytes;
     return {};
 }
@@ -435,7 +489,13 @@ void PhysicalDevice::SetupBackendDeviceToggles(dawn::platform::Platform* platfor
     const OpenGLFunctions& gl = mFunctions;
 
     // TODO(crbug.com/dawn/582): Use OES_draw_buffers_indexed where available.
-    bool supportsIndexedDrawBuffers = gl.IsAtLeastGLES(3, 2) || gl.IsAtLeastGL(3, 0);
+    // glBlendEquationSeparatei/glBlendFuncSeparatei are only core in desktop GL 4.0 (or with
+    // GL_ARB_draw_buffers_blend), so per-target blend state needs the non-indexed path below 4.0.
+    bool supportsIndexedDrawBuffers =
+        (gl.IsAtLeastGLES(3, 2) || gl.IsAtLeastGL(3, 0)) &&
+        gl.BlendEquationSeparatei != nullptr && gl.BlendFuncSeparatei != nullptr;
+
+    bool supportsCompute = gl.SupportsCompute();
 
     bool supportsSnormRead =
         gl.IsAtLeastGL(4, 4) || gl.IsGLExtensionSupported("GL_EXT_render_snorm");
@@ -465,35 +525,42 @@ void PhysicalDevice::SetupBackendDeviceToggles(dawn::platform::Platform* platfor
     deviceToggles->Default(Toggle::UsePlaceholderFragmentInVertexOnlyPipeline,
                            gl.GetVersion().IsES());
     // For OpenGL/OpenGL ES, use compute shader blit to emulate depth16unorm texture to buffer
-    // copies.
-    deviceToggles->Default(Toggle::UseBlitForDepth16UnormTextureToBufferCopy, true);
+    // copies. Compute is unavailable below GL 4.3 (see SupportsCompute), where the plain copy
+    // path is used instead.
+    deviceToggles->Default(Toggle::UseBlitForDepth16UnormTextureToBufferCopy, supportsCompute);
 
     // For OpenGL ES, use compute shader blit to emulate depth32float texture to buffer copies.
     deviceToggles->Default(Toggle::UseBlitForDepth32FloatTextureToBufferCopy,
-                           gl.GetVersion().IsES());
+                           supportsCompute && gl.GetVersion().IsES());
 
     // For OpenGL ES, use compute shader blit to emulate stencil texture to buffer copies.
-    deviceToggles->Default(Toggle::UseBlitForStencilTextureToBufferCopy, gl.GetVersion().IsES());
+    deviceToggles->Default(Toggle::UseBlitForStencilTextureToBufferCopy,
+                           supportsCompute && gl.GetVersion().IsES());
 
     // For OpenGL ES, use compute shader blit to emulate snorm texture to buffer copies.
     deviceToggles->Default(Toggle::UseBlitForSnormTextureToBufferCopy,
-                           gl.GetVersion().IsES() || !supportsSnormRead);
+                           supportsCompute && (gl.GetVersion().IsES() || !supportsSnormRead));
 
     // For OpenGL ES, use compute shader blit to emulate bgra8unorm texture to buffer copies.
-    deviceToggles->Default(Toggle::UseBlitForBGRA8UnormTextureToBufferCopy, !supportsBGRARead);
+    deviceToggles->Default(Toggle::UseBlitForBGRA8UnormTextureToBufferCopy,
+                           supportsCompute && !supportsBGRARead);
 
     // For OpenGL ES, use compute shader blit to emulate rgb9e5ufloat texture to buffer copies.
-    deviceToggles->Default(Toggle::UseBlitForRGB9E5UfloatTextureCopy, gl.GetVersion().IsES());
+    deviceToggles->Default(Toggle::UseBlitForRGB9E5UfloatTextureCopy,
+                           supportsCompute && gl.GetVersion().IsES());
 
     // Use compute shader blit to emulate rg11b10ufloat texture to buffer copies if not color
     // renderable.
-    deviceToggles->Default(Toggle::UseBlitForRG11B10UfloatTextureCopy, !isRG11B10UfloatRenderable);
+    deviceToggles->Default(Toggle::UseBlitForRG11B10UfloatTextureCopy,
+                           supportsCompute && !isRG11B10UfloatRenderable);
 
     // Use compute shader blit to emulate float16 texture to buffer copies if not color renderable.
-    deviceToggles->Default(Toggle::UseBlitForFloat16TextureCopy, !isFloat16Renderable);
+    deviceToggles->Default(Toggle::UseBlitForFloat16TextureCopy,
+                           supportsCompute && !isFloat16Renderable);
 
     // Use compute shader blit to emulate float32 texture to buffer copies if not color renderable.
-    deviceToggles->Default(Toggle::UseBlitForFloat32TextureCopy, !isFloat32Renderable);
+    deviceToggles->Default(Toggle::UseBlitForFloat32TextureCopy,
+                           supportsCompute && !isFloat32Renderable);
 
     // Use a blit to emulate stencil-only buffer-to-texture copies.
     deviceToggles->Default(Toggle::UseBlitForBufferToStencilTextureCopy, true);

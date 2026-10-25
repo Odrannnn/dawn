@@ -448,6 +448,9 @@ EGLContext EGLAPIENTRY CreateContext(EGLDisplay dpy,
     wglAttribs.push_back(0);
 
     HGLRC shareRC = share != EGL_NO_CONTEXT ? static_cast<Context*>(share)->rc : nullptr;
+    // The requested major/minor go straight to WGL. A failure (including a driver that refuses the
+    // version) must be reported as EGL_NO_CONTEXT rather than falling back to an older context
+    // here: eglCreateContext callers retry with a lower version themselves (see ContextEGL).
     HGLRC rc = d.createContextAttribs(d.hiddenDC, shareRC, wglAttribs.data());
     if (rc == nullptr) {
         SetError(EGL_BAD_MATCH);

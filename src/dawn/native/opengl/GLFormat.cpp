@@ -49,6 +49,15 @@ GLenum GetStencil8InternalFormat(const OpenGLFunctions& gl) {
 }
 
 bool FormatSupportsTexStorage(const OpenGLFunctions& gl, GLenum internalFormat) {
+    // glTexStorage*D are core in desktop OpenGL 4.2 and in ES 3.0. On older desktop contexts they
+    // are only usable when GL_ARB_texture_storage is present (in which case
+    // OpenGLFunctions::Initialize loads them); otherwise Texture::AllocateTexture falls back to
+    // glTexImage.
+    if (gl.GetVersion().IsDesktop() && !gl.IsAtLeastGL(4, 2) &&
+        !gl.IsGLExtensionSupported("GL_ARB_texture_storage")) {
+        return false;
+    }
+
     if (internalFormat == GL_BGRA8_EXT && gl.GetVersion().IsES() &&
         !gl.IsGLExtensionSupported("GL_EXT_texture_storage")) {
         // GL_BGRA8_EXT is only valid for glTextureStorage if GL_EXT_texture_storage is present. The

@@ -85,7 +85,7 @@ MaybeError CopyImageSubData(const OpenGLFunctions& gl,
                             GLint dstLevel,
                             const Origin3D& dst,
                             const Extent3D& size) {
-    if (gl.IsAtLeastGL(4, 3) || gl.IsAtLeastGLES(3, 2)) {
+    if (gl.IsAtLeastGL(4, 3) || gl.IsAtLeastGLES(3, 2) || gl.CopyImageSubData != nullptr) {
         DAWN_GL_TRY(gl, CopyImageSubData(srcHandle, srcTarget, srcLevel, src.x, src.y, src.z,
                                          dstHandle, dstTarget, dstLevel, dst.x, dst.y, dst.z,
                                          size.width, size.height, size.depthOrArrayLayers));

@@ -56,6 +56,56 @@ MaybeError OpenGLFunctions::Initialize(GLGetProcProc getProc) {
         }
     }
 
+#if defined(DAWN_ENABLE_BACKEND_DESKTOP_GL)
+    if (mVersion.IsDesktop()) {
+        // LoadDesktopGLProcs only loads the procs of core versions up to the context version, but
+        // many of the entry points it uses are also available through an ARB extension on older
+        // contexts (notably 3.3, which has no compute). Load those by their core names when the
+        // extension is present; drivers expose extension entry points under both names.
+        if (!IsAtLeastGL(4, 2) && IsGLExtensionSupported("GL_ARB_texture_storage")) {
+            TexStorage2D = reinterpret_cast<PFNGLTEXSTORAGE2DPROC>(getProc("glTexStorage2D"));
+            TexStorage3D = reinterpret_cast<PFNGLTEXSTORAGE3DPROC>(getProc("glTexStorage3D"));
+        }
+        if (!IsAtLeastGL(4, 3) &&
+            IsGLExtensionSupported("GL_ARB_texture_storage_multisample")) {
+            TexStorage2DMultisample = reinterpret_cast<PFNGLTEXSTORAGE2DMULTISAMPLEPROC>(
+                getProc("glTexStorage2DMultisample"));
+        }
+        if (!IsAtLeastGL(4, 3) && IsGLExtensionSupported("GL_ARB_copy_image")) {
+            CopyImageSubData =
+                reinterpret_cast<PFNGLCOPYIMAGESUBDATAPROC>(getProc("glCopyImageSubData"));
+        }
+        if (!IsAtLeastGL(4, 1) && IsGLExtensionSupported("GL_ARB_ES2_compatibility")) {
+            DepthRangef = reinterpret_cast<PFNGLDEPTHRANGEFPROC>(getProc("glDepthRangef"));
+            ClearDepthf = reinterpret_cast<PFNGLCLEARDEPTHFPROC>(getProc("glClearDepthf"));
+        }
+        if (!IsAtLeastGL(4, 3) && IsGLExtensionSupported("GL_ARB_texture_view")) {
+            TextureView = reinterpret_cast<PFNGLTEXTUREVIEWPROC>(getProc("glTextureView"));
+        }
+        if (!IsAtLeastGL(4, 0) && IsGLExtensionSupported("GL_ARB_draw_indirect")) {
+            DrawArraysIndirect =
+                reinterpret_cast<PFNGLDRAWARRAYSINDIRECTPROC>(getProc("glDrawArraysIndirect"));
+            DrawElementsIndirect = reinterpret_cast<PFNGLDRAWELEMENTSINDIRECTPROC>(
+                getProc("glDrawElementsIndirect"));
+        }
+        if (!IsAtLeastGL(4, 0) && IsGLExtensionSupported("GL_ARB_draw_buffers_blend")) {
+            BlendEquationSeparatei = reinterpret_cast<PFNGLBLENDEQUATIONSEPARATEIPROC>(
+                getProc("glBlendEquationSeparatei"));
+            BlendFuncSeparatei = reinterpret_cast<PFNGLBLENDFUNCSEPARATEIPROC>(
+                getProc("glBlendFuncSeparatei"));
+        }
+        if (!IsAtLeastGL(4, 3) && IsGLExtensionSupported("GL_ARB_invalidate_subdata")) {
+            InvalidateFramebuffer = reinterpret_cast<PFNGLINVALIDATEFRAMEBUFFERPROC>(
+                getProc("glInvalidateFramebuffer"));
+        }
+        if (!IsAtLeastGL(4, 2) && IsGLExtensionSupported("GL_ARB_shader_image_load_store")) {
+            BindImageTexture =
+                reinterpret_cast<PFNGLBINDIMAGETEXTUREPROC>(getProc("glBindImageTexture"));
+            MemoryBarrier = reinterpret_cast<PFNGLMEMORYBARRIERPROC>(getProc("glMemoryBarrier"));
+        }
+    }
+#endif
+
     return {};
 }
 
@@ -73,6 +123,15 @@ bool OpenGLFunctions::IsAtLeastGLES(uint32_t majorVersion, uint32_t minorVersion
 
 bool OpenGLFunctions::SupportsParallelShaderCompile() const {
     return MaxShaderCompilerThreadsKHR != nullptr;
+}
+
+bool OpenGLFunctions::SupportsCompute() const {
+    if (IsAtLeastGL(4, 3) || IsAtLeastGLES(3, 1)) {
+        return true;
+    }
+    return IsGLExtensionSupported("GL_ARB_compute_shader") &&
+           IsGLExtensionSupported("GL_ARB_shader_storage_buffer_object") &&
+           IsGLExtensionSupported("GL_ARB_shader_image_load_store");
 }
 
 }  // namespace dawn::native::opengl

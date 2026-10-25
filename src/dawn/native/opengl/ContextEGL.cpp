@@ -156,6 +156,9 @@ MaybeError ContextEGL::Initialize(wgpu::BackendType backend,
                 AddAttrib(EGL_CONTEXT_MINOR_VERSION, 1);
                 break;
             case wgpu::BackendType::OpenGL:
+                // Ask for 4.4 first: it is the version the backend is primarily tested against and
+                // it provides compute. If the driver cannot create it, a 3.3 core context is
+                // retried below (graphics only, see PhysicalDevice::InitializeImpl).
                 AddAttrib(EGL_CONTEXT_MAJOR_VERSION, 4);
                 AddAttrib(EGL_CONTEXT_MINOR_VERSION, 4);
                 break;
@@ -207,6 +210,23 @@ MaybeError ContextEGL::Initialize(wgpu::BackendType backend,
 
     mState.context =
         egl.CreateContext(mDisplay->GetDisplay(), contextConfig, sharedContext, attribs.data());
+
+    // Drivers (or hardware) that cannot create an OpenGL 4.4 context still work when they provide
+    // 3.3, which is all the graphics parts of the backend need. Retry with 3.3, keeping every other
+    // attribute (robustness, virtualization, texture sharing) as requested.
+    if (mState.context == EGL_NO_CONTEXT && backend == wgpu::BackendType::OpenGL &&
+        egl.HasExt(EGLExt::CreateContext)) {
+        for (size_t i = 0; i + 1 < attribs.size(); ++i) {
+            if (attribs[i] == EGL_CONTEXT_MAJOR_VERSION) {
+                attribs[i + 1] = 3;
+            } else if (attribs[i] == EGL_CONTEXT_MINOR_VERSION) {
+                attribs[i + 1] = 3;
+            }
+        }
+        mState.context =
+            egl.CreateContext(mDisplay->GetDisplay(), contextConfig, sharedContext, attribs.data());
+    }
+
     DAWN_TRY(CheckEGL(egl, mState.context != EGL_NO_CONTEXT, "eglCreateContext"));
 
     // When EGL_KHR_surfaceless_context is not supported, we need to create a pbuffer to act

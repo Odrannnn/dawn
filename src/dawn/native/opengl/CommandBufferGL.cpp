@@ -28,6 +28,7 @@
 #include "src/dawn/native/opengl/CommandBufferGL.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <utility>
 #include <vector>
@@ -805,6 +806,55 @@ class ImmediateTracker : public T {
     }
 };
 
+// glDepthRangef is only core in desktop OpenGL 4.1 (or with GL_ARB_ES2_compatibility); the double
+// precision version is core since 1.0 and takes the same range.
+void SetDepthRange(const OpenGLFunctions& gl, float minDepth, float maxDepth) {
+    if (gl.DepthRangef != nullptr) {
+        DAWN_GL_TRY_IGNORE_ERRORS(gl, DepthRangef(minDepth, maxDepth));
+    } else {
+        DAWN_GL_TRY_IGNORE_ERRORS(gl, DepthRange(minDepth, maxDepth));
+    }
+}
+
+// GL_PRIMITIVE_RESTART_FIXED_INDEX is only core in desktop OpenGL 4.3 (or with
+// GL_ARB_ES3_compatibility). Below that, strip topologies get the same behaviour by using
+// GL_PRIMITIVE_RESTART with the maximum value of the index format as the restart index.
+void SetPrimitiveRestart(const OpenGLFunctions& gl, GLenum topology, GLenum indexFormat) {
+    bool isStrip = topology == GL_LINE_STRIP || topology == GL_TRIANGLE_STRIP;
+    if (gl.IsAtLeastGL(4, 3) || gl.IsAtLeastGLES(3, 0) ||
+        gl.IsGLExtensionSupported("GL_ARB_ES3_compatibility")) {
+        if (isStrip) {
+            DAWN_GL_TRY_IGNORE_ERRORS(gl, Enable(GL_PRIMITIVE_RESTART_FIXED_INDEX));
+        } else {
+            DAWN_GL_TRY_IGNORE_ERRORS(gl, Disable(GL_PRIMITIVE_RESTART_FIXED_INDEX));
+        }
+        return;
+    }
+    if (isStrip) {
+        GLuint restartIndex = indexFormat == GL_UNSIGNED_SHORT ? 0xFFFFu : 0xFFFFFFFFu;
+        DAWN_GL_TRY_IGNORE_ERRORS(gl, Enable(GL_PRIMITIVE_RESTART));
+        DAWN_GL_TRY_IGNORE_ERRORS(gl, PrimitiveRestartIndex(restartIndex));
+    } else {
+        DAWN_GL_TRY_IGNORE_ERRORS(gl, Disable(GL_PRIMITIVE_RESTART));
+    }
+}
+
+// Reads the arguments of an indirect draw back to the CPU. Only used when the context has no
+// GL_ARB_draw_indirect (desktop OpenGL below 4.0), where the draw has to be issued as a
+// non-indirect draw instead.
+template <size_t N>
+MaybeError ReadIndirectDrawArgs(const OpenGLFunctions& gl,
+                                const Buffer* buffer,
+                                uint64_t offset,
+                                std::array<uint32_t, N>& args) {
+    // Earlier commands may have written the arguments on the GPU.
+    DAWN_GL_TRY(gl, Finish());
+    DAWN_GL_TRY(gl, BindBuffer(GL_COPY_READ_BUFFER, buffer->GetHandle()));
+    DAWN_GL_TRY(gl, GetBufferSubData(GL_COPY_READ_BUFFER, checked_cast<GLintptr>(offset),
+                                     checked_cast<GLsizeiptr>(sizeof(args)), args.data()));
+    return {};
+}
+
 }  // namespace
 
 CommandBuffer::CommandBuffer(CommandEncoder* encoder, const CommandBufferDescriptor* descriptor)
@@ -1238,8 +1288,13 @@ MaybeError CommandBuffer::ExecuteComputePass(const OpenGLFunctions& gl) {
                 DAWN_TRY(bindGroupTracker.Apply(gl));
                 DAWN_TRY(immediates.Apply(gl));
 
+                // Compute requires GL 4.3 / GL_ARB_compute_shader; dispatch commands cannot be
+                // validated when the adapter reports no compute limits.
+                DAWN_ASSERT(gl.DispatchCompute != nullptr);
                 DAWN_GL_TRY(gl, DispatchCompute(dispatch->x, dispatch->y, dispatch->z));
-                DAWN_GL_TRY(gl, MemoryBarrier(GL_ALL_BARRIER_BITS));
+                if (gl.MemoryBarrier != nullptr) {
+                    DAWN_GL_TRY(gl, MemoryBarrier(GL_ALL_BARRIER_BITS));
+                }
                 break;
             }
 
@@ -1253,9 +1308,12 @@ MaybeError CommandBuffer::ExecuteComputePass(const OpenGLFunctions& gl) {
 
                 DAWN_GL_TRY(gl,
                             BindBuffer(GL_DISPATCH_INDIRECT_BUFFER, indirectBuffer->GetHandle()));
+                DAWN_ASSERT(gl.DispatchComputeIndirect != nullptr);
                 DAWN_GL_TRY(gl,
                             DispatchComputeIndirect(static_cast<GLintptr>(indirectBufferOffset)));
-                DAWN_GL_TRY(gl, MemoryBarrier(GL_ALL_BARRIER_BITS));
+                if (gl.MemoryBarrier != nullptr) {
+                    DAWN_GL_TRY(gl, MemoryBarrier(GL_ALL_BARRIER_BITS));
+                }
 
                 indirectBuffer->TrackUsage();
                 break;
@@ -1374,7 +1432,7 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
     DAWN_GL_TRY(gl, Viewport(0, 0, renderPass->width, renderPass->height));
     float minDepth = 0.0f;
     float maxDepth = 1.0f;
-    DAWN_GL_TRY(gl, DepthRangef(minDepth, maxDepth));
+    SetDepthRange(gl, minDepth, maxDepth);
 
     DAWN_GL_TRY(gl, Scissor(0, 0, renderPass->width, renderPass->height));
 
@@ -1475,11 +1533,7 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
                 DAWN_TRY(bindGroupTracker.Apply(gl));
 
                 const auto topology = lastPipeline->GetGLPrimitiveTopology();
-                if (topology == GL_LINE_STRIP || topology == GL_TRIANGLE_STRIP) {
-                    DAWN_GL_TRY(gl, Enable(GL_PRIMITIVE_RESTART_FIXED_INDEX));
-                } else {
-                    DAWN_GL_TRY(gl, Disable(GL_PRIMITIVE_RESTART_FIXED_INDEX));
-                }
+                SetPrimitiveRestart(gl, topology, indexBufferFormat);
 
                 immediates.SetFirstVertex(draw->baseVertex);
                 immediates.SetFirstInstance(draw->firstInstance);
@@ -1507,10 +1561,25 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
                 Buffer* indirectBuffer = ToBackend(validatedDraw.indirectBuffer.Get());
                 DAWN_ASSERT(indirectBuffer != nullptr);
 
-                DAWN_GL_TRY(gl, BindBuffer(GL_DRAW_INDIRECT_BUFFER, indirectBuffer->GetHandle()));
-                DAWN_GL_TRY(gl, DrawArraysIndirect(lastPipeline->GetGLPrimitiveTopology(),
-                                                   reinterpret_cast<void*>(static_cast<intptr_t>(
-                                                       validatedDraw.indirectOffset))));
+                if (gl.DrawArraysIndirect != nullptr) {
+                    DAWN_GL_TRY(gl,
+                                BindBuffer(GL_DRAW_INDIRECT_BUFFER, indirectBuffer->GetHandle()));
+                    DAWN_GL_TRY(gl, DrawArraysIndirect(lastPipeline->GetGLPrimitiveTopology(),
+                                                       reinterpret_cast<void*>(static_cast<intptr_t>(
+                                                           validatedDraw.indirectOffset))));
+                } else {
+                    // No GL_ARB_draw_indirect (OpenGL 3.3): read the arguments back and issue the
+                    // equivalent non-indirect draw.
+                    std::array<uint32_t, 4> args;  // vertexCount, instanceCount, firstVertex,
+                                                   // firstInstance
+                    DAWN_TRY(ReadIndirectDrawArgs(gl, indirectBuffer, validatedDraw.indirectOffset,
+                                                  args));
+                    if (args[1] > 0) {
+                        DAWN_ASSERT(args[3] == 0);
+                        DAWN_GL_TRY(gl, DrawArraysInstanced(lastPipeline->GetGLPrimitiveTopology(),
+                                                            args[2], args[0], args[1]));
+                    }
+                }
                 indirectBuffer->TrackUsage();
                 break;
             }
@@ -1531,16 +1600,34 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
                 DAWN_ASSERT(indirectBuffer != nullptr);
 
                 const auto topology = lastPipeline->GetGLPrimitiveTopology();
-                if (topology == GL_LINE_STRIP || topology == GL_TRIANGLE_STRIP) {
-                    DAWN_GL_TRY(gl, Enable(GL_PRIMITIVE_RESTART_FIXED_INDEX));
-                } else {
-                    DAWN_GL_TRY(gl, Disable(GL_PRIMITIVE_RESTART_FIXED_INDEX));
-                }
+                SetPrimitiveRestart(gl, topology, indexBufferFormat);
 
-                DAWN_GL_TRY(gl, BindBuffer(GL_DRAW_INDIRECT_BUFFER, indirectBuffer->GetHandle()));
-                DAWN_GL_TRY(gl, DrawElementsIndirect(topology, indexBufferFormat,
-                                                     reinterpret_cast<void*>(static_cast<intptr_t>(
-                                                         validatedDraw.indirectOffset))));
+                if (gl.DrawElementsIndirect != nullptr) {
+                    DAWN_GL_TRY(gl,
+                                BindBuffer(GL_DRAW_INDIRECT_BUFFER, indirectBuffer->GetHandle()));
+                    DAWN_GL_TRY(gl, DrawElementsIndirect(topology, indexBufferFormat,
+                                                         reinterpret_cast<void*>(
+                                                             static_cast<intptr_t>(
+                                                                 validatedDraw.indirectOffset))));
+                } else {
+                    // No GL_ARB_draw_indirect (OpenGL 3.3): read the arguments back and issue the
+                    // equivalent non-indirect draw.
+                    std::array<uint32_t, 5>
+                        args;  // indexCount, instanceCount, firstIndex, baseVertex, firstInstance
+                    DAWN_TRY(ReadIndirectDrawArgs(gl, indirectBuffer, validatedDraw.indirectOffset,
+                                                  args));
+                    if (args[1] > 0) {
+                        DAWN_ASSERT(args[4] == 0);
+                        DAWN_GL_TRY(gl, DrawElementsInstancedBaseVertex(
+                                            topology, checked_cast<GLsizei>(args[0]),
+                                            indexBufferFormat,
+                                            reinterpret_cast<void*>(
+                                                static_cast<uint64_t>(args[2]) * indexFormatSize +
+                                                indexBufferBaseOffset),
+                                            checked_cast<GLsizei>(args[1]),
+                                            checked_cast<GLint>(args[3])));
+                    }
+                }
                 indirectBuffer->TrackUsage();
                 break;
             }
@@ -1646,7 +1733,7 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
                     }
                 }
 
-                if (!attachmentsToDiscard.empty()) {
+                if (!attachmentsToDiscard.empty() && gl.InvalidateFramebuffer != nullptr) {
                     DAWN_GL_TRY(gl, BindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo));
                     DAWN_GL_TRY(gl, InvalidateFramebuffer(
                                         GL_DRAW_FRAMEBUFFER,
@@ -1677,7 +1764,7 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
                 }
                 minDepth = cmd->minDepth;
                 maxDepth = cmd->maxDepth;
-                DAWN_GL_TRY(gl, DepthRangef(minDepth, maxDepth));
+                SetDepthRange(gl, minDepth, maxDepth);
                 immediates.SetClampFragDepth(minDepth, maxDepth);
                 break;
             }

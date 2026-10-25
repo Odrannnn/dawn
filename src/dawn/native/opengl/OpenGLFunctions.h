@@ -54,6 +54,11 @@ struct OpenGLFunctions : OpenGLFunctionsBase {
     bool IsAtLeastGLES(uint32_t majorVersion, uint32_t minorVersion) const;
     bool SupportsParallelShaderCompile() const;
 
+    // Whether compute shaders, and the storage resources they need, can be used on this context.
+    // A desktop OpenGL 3.3 context without the relevant extensions is graphics-only: limits for
+    // compute and storage resources are reported as 0 and compute-based emulation is disabled.
+    bool SupportsCompute() const;
+
     MaxShaderCompilerThreadsKHRProc MaxShaderCompilerThreadsKHR = nullptr;
 
   private:
