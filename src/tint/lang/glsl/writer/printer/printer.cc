@@ -105,6 +105,7 @@ constexpr const char* kEXTTextureShadowLod = "GL_EXT_texture_shadow_lod";
 constexpr const char* kEXTGeometryShader = "GL_EXT_geometry_shader";
 constexpr const char* kEXTFragmentShaderBarycentric = "GL_EXT_fragment_shader_barycentric";
 constexpr const char* kEXTConservativeDepth = "GL_EXT_conservative_depth";
+constexpr const char* kARBShadingLanguage420pack = "GL_ARB_shading_language_420pack";
 
 enum class LayoutFormat : uint8_t {
     kStd140,
@@ -1179,6 +1180,15 @@ class Printer : public tint::TextGenerator {
         out << ";";
     }
 
+    /// @returns true if a variable in @p addrspace is an inter-stage variable for the stage being
+    /// emitted, i.e. a vertex output or a fragment input
+    bool IsInterstageVar(core::AddressSpace addrspace) const {
+        return (stage_ == core::ir::Function::PipelineStage::kVertex &&
+                addrspace == core::AddressSpace::kOut) ||
+               (stage_ == core::ir::Function::PipelineStage::kFragment &&
+                addrspace == core::AddressSpace::kIn);
+    }
+
     void EmitIOVar(core::ir::Var* var) {
         auto& attrs = var->Attributes();
         auto addrspace = var->Result()->Type()->As<core::type::Pointer>()->AddressSpace();
@@ -1210,17 +1220,25 @@ class Printer : public tint::TextGenerator {
         } else if (attrs.location) {
             // Use a fixed naming scheme for interstage variables so that they match between vertex
             // and fragment shaders.
-            if ((stage_ == core::ir::Function::PipelineStage::kVertex &&
-                 addrspace == core::AddressSpace::kOut) ||
-                (stage_ == core::ir::Function::PipelineStage::kFragment &&
-                 addrspace == core::AddressSpace::kIn)) {
+            if (IsInterstageVar(addrspace)) {
                 names_.Add(var->Result(),
                            "tint_interstage_location" + std::to_string(attrs.location.value()));
             }
         }
 
+        // layout(location) on inter-stage variables (vertex outputs and fragment inputs) is only
+        // core from desktop GLSL 4.10, so below that the variables are matched by their
+        // tint_interstage_locationN names instead. Vertex inputs and fragment outputs keep their
+        // location, which has been core since GLSL 3.30.
+        std::optional<uint32_t> location = attrs.location;
+        if (location.has_value() && IsInterstageVar(addrspace) && !options_.version.IsES() &&
+            (options_.version.major_version < 4 ||
+             (options_.version.major_version == 4 && options_.version.minor_version < 1))) {
+            location = std::nullopt;
+        }
+
         auto out = Line();
-        EmitLayoutLocation(out, attrs.location, attrs.blend_src);
+        EmitLayoutLocation(out, location, attrs.blend_src);
         if (attrs.interpolation.has_value()) {
             EmitInterpolation(out, attrs.interpolation.value());
         }
@@ -1276,6 +1294,14 @@ class Printer : public tint::TextGenerator {
                            std::optional<core::TexelFormat> texel_format,
                            std::optional<LayoutFormat> layout_format) {
         TINT_IR_ASSERT(ir_, !(texel_format.has_value() && layout_format.has_value()));
+
+        // layout(binding = N) is core from desktop GLSL 4.20; below that it needs
+        // GL_ARB_shading_language_420pack, which Dawn requires on such contexts.
+        if (!options_.version.IsES() &&
+            (options_.version.major_version < 4 ||
+             (options_.version.major_version == 4 && options_.version.minor_version < 2))) {
+            EmitExtension(kARBShadingLanguage420pack);
+        }
 
         out << "layout(binding = " << bp.binding;
 
