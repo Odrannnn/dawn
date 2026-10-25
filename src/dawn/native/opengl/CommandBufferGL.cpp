@@ -1779,9 +1779,15 @@ MaybeError DoTexSubImage(const OpenGLFunctions& gl,
         if (bytesPerRow % blockInfo.byteSize == 0 && gl.GetVersion().IsDesktop()) {
             const BlockCount blocksPerRow = blockInfo.BytesToBlocks(bytesPerRow);
 
-            size_t imageSize =
-                rowSize * checked_cast<size_t>(blockInfo.ToBytes(blockCopySize.height *
-                                                                 blockCopySize.depthOrArrayLayers));
+            // rowSize is already in bytes: the rest is a block count, not more bytes
+            // (ToBytes here made imageSize byteSize times too large, which Mesa rejects
+            // with GL_INVALID_VALUE).
+            // A cube face takes one layer of it.
+            const size_t layerSize =
+                rowSize * checked_cast<size_t>(static_cast<uint64_t>(blockCopySize.height));
+            const size_t imageSize =
+                layerSize *
+                checked_cast<size_t>(static_cast<uint64_t>(blockCopySize.depthOrArrayLayers));
 
             const TexelCount height = std::min(copySize.height, virtSize.height - y);
 
@@ -1813,7 +1819,7 @@ MaybeError DoTexSubImage(const OpenGLFunctions& gl,
                                     cubeMapTarget, destination.mipLevel, dchecked_cast<uint32_t>(x),
                                     dchecked_cast<uint32_t>(y), dchecked_cast<uint32_t>(width),
                                     dchecked_cast<uint32_t>(height), format.internalFormat,
-                                    checked_cast<GLsizei>(imageSize), pointer));
+                                    checked_cast<GLsizei>(layerSize), pointer));
                     DAWN_UNSAFE_TODO(pointer += bytesPerImage);
                 }
             } else {

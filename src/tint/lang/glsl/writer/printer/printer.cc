@@ -194,6 +194,8 @@ class Printer : public tint::TextGenerator {
     core::ir::Function::PipelineStage stage_ = core::ir::Function::PipelineStage::kUndefined;
     /// The current function being emitted
     const core::ir::Function* current_function_ = nullptr;
+    /// The immediate data variable, if the module has one
+    const core::ir::Var* immediate_var_ = nullptr;
     /// The current block being emitted
     const core::ir::Block* current_block_ = nullptr;
 
@@ -394,8 +396,38 @@ class Printer : public tint::TextGenerator {
         {
             ScopedIndent si(current_buffer_);
             EmitBlock(func->Block());
+            if (func->IsVertex()) {
+                EmitImmediatesTailRead();
+            }
         }
 
+        Line() << "}";
+    }
+
+    /// Mesa (seen in 26.0, every driver) mishandles a uniform array with an explicit location
+    /// that the program reads only part of: glUniform values never reach the shader, which reads
+    /// 0, and a shader-cache hit on the program segfaults. Read the last element, which keeps the
+    /// whole array live. The immediates are padded to a multiple of 4 words, and Dawn never writes
+    /// the padding (GL starts uniforms at 0), so the test never passes.
+    void EmitImmediatesTailRead() {
+        if (immediate_var_ == nullptr) {
+            return;
+        }
+        auto* ptr = immediate_var_->Result()->Type()->As<core::type::Pointer>();
+        auto* arr = ptr ? ptr->StoreType()->As<core::type::Array>() : nullptr;
+        if (arr == nullptr || !arr->ElemType()->Is<core::type::U32>()) {
+            return;
+        }
+        auto count = arr->ConstantCount();
+        if (!count.has_value() || *count == 0) {
+            return;
+        }
+        Line() << "if (" << NameOf(immediate_var_->Result()) << "[" << (*count - 1)
+               << "u] == 0xffffffffu) {";
+        {
+            ScopedIndent si(current_buffer_);
+            Line() << "gl_Position = vec4(0.0f);";
+        }
         Line() << "}";
     }
 
@@ -1141,6 +1173,7 @@ class Printer : public tint::TextGenerator {
         auto out = Line();
         EmitLayoutLocation(out, {0}, std::nullopt);
 
+        immediate_var_ = var;
         names_.Add(var->Result(), kImmediateVarName);
         EmitTypeAndName(out, var->Result()->Type(), kImmediateVarName);
         out << ";";
@@ -1226,7 +1259,11 @@ class Printer : public tint::TextGenerator {
         if (location.has_value()) {
             out << "layout(location = " << location.value();
             if (blend_src.has_value()) {
-                EmitExtension(kEXTBlendFuncExtended);
+                // The index qualifier is core in desktop GLSL 3.30, where the ES extension
+                // doesn't exist (Mesa rejects the directive).
+                if (options_.version.IsES()) {
+                    EmitExtension(kEXTBlendFuncExtended);
+                }
 
                 out << ", index = " << blend_src.value();
             }
