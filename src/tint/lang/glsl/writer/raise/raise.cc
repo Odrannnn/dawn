@@ -128,10 +128,14 @@ Result<SuccessType> Raise(core::ir::Module& module, const Options& options) {
         core_polyfills.clamp_int = true;
         core_polyfills.count_leading_zeros = true;
         core_polyfills.count_trailing_zeros = true;
-        core_polyfills.extract_bits = core::ir::transform::BuiltinPolyfillLevel::kClampOrRangeCheck;
+        // bitfieldExtract and bitfieldInsert are core from desktop GLSL 4.00 (ES from 3.10).
+        const auto bitfield_level = !options.version.IsES() && options.version.major_version < 4
+                                        ? core::ir::transform::BuiltinPolyfillLevel::kFull
+                                        : core::ir::transform::BuiltinPolyfillLevel::kClampOrRangeCheck;
+        core_polyfills.extract_bits = bitfield_level;
         core_polyfills.first_leading_bit = true;
         core_polyfills.first_trailing_bit = true;
-        core_polyfills.insert_bits = core::ir::transform::BuiltinPolyfillLevel::kClampOrRangeCheck;
+        core_polyfills.insert_bits = bitfield_level;
         core_polyfills.saturate = true;
         core_polyfills.texture_sample_base_clamp_to_edge_2d_f32 = true;
         core_polyfills.dot_4x8_packed = true;
@@ -224,7 +228,11 @@ Result<SuccessType> Raise(core::ir::Module& module, const Options& options) {
 
     TINT_CHECK_RESULT(raise::BinaryPolyfill(module));
     // Must come after zero-init as it will add builtins
-    TINT_CHECK_RESULT(raise::BuiltinPolyfill(module));
+    // Integer and boolean `mix` is core from desktop GLSL 4.50 (ES has it from 3.10).
+    const bool integer_mix =
+        options.version.IsES() || options.version.major_version > 4 ||
+        (options.version.major_version == 4 && options.version.minor_version >= 5);
+    TINT_CHECK_RESULT(raise::BuiltinPolyfill(module, integer_mix));
 
     {
         // Must come after DirectVariableAccess

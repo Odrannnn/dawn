@@ -40,8 +40,9 @@ namespace tint::glsl::writer::raise {
 /// BuiltinPolyfill is a transform that replaces calls to builtins with polyfills and calls to
 /// GLSL polyfilled or backend intrinsic functions.
 /// @param module the module to transform
+/// @param integer_mix whether `mix` takes integer and boolean operands (desktop GLSL 4.50+, ES)
 /// @returns success or failure
-Result<SuccessType> BuiltinPolyfill(core::ir::Module& module);
+Result<SuccessType> BuiltinPolyfill(core::ir::Module& module, bool integer_mix = true);
 
 }  // namespace tint::glsl::writer::raise
 

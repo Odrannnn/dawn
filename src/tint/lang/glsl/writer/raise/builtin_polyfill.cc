@@ -49,6 +49,9 @@ struct State {
     /// The IR module.
     core::ir::Module& ir;
 
+    /// Whether `mix` takes integer and boolean operands.
+    bool integer_mix;
+
     /// The IR builder.
     core::ir::Builder b{ir};
 
@@ -425,6 +428,30 @@ struct State {
                 cond = b.Construct(ty.MatchWidth(ty.bool_(), val_ty), cond)->Result();
             }
 
+            // `mix` with a boolean selector takes integer and boolean operands only from desktop
+            // GLSL 4.50; before that it resolves to the float overload. Integers are blended
+            // through an all-ones-or-zero mask instead, and booleans through floats (exact for 0
+            // and 1).
+            const auto* elem_ty = val_ty->DeepestElement();
+            if (!integer_mix && elem_ty->IsIntegerScalar()) {
+                auto* one = b.Convert(val_ty, cond)->Result();
+                auto* m = b.Subtract(b.Zero(val_ty), one)->Result();
+                auto* not_m = b.Complement(m)->Result();
+                auto* t = b.And(args[1], m)->Result();
+                auto* f = b.And(args[0], not_m)->Result();
+                call->Result()->ReplaceAllUsesWith(b.Or(t, f)->Result());
+                return;
+            }
+            if (!integer_mix && elem_ty->Is<core::type::Bool>()) {
+                auto* float_ty = ty.MatchWidth(ty.f32(), val_ty);
+                auto* f = b.Convert(float_ty, args[0])->Result();
+                auto* t = b.Convert(float_ty, args[1])->Result();
+                auto* mixed =
+                    b.Call<glsl::ir::BuiltinCall>(float_ty, glsl::BuiltinFn::kMix, f, t, cond);
+                b.ConvertWithResult(call->DetachResult(), mixed);
+                return;
+            }
+
             b.CallWithResult<glsl::ir::BuiltinCall>(call->DetachResult(), glsl::BuiltinFn::kMix,
                                                     args[0], args[1], cond);
         });
@@ -517,10 +544,10 @@ struct State {
 
 }  // namespace
 
-Result<SuccessType> BuiltinPolyfill(core::ir::Module& ir) {
+Result<SuccessType> BuiltinPolyfill(core::ir::Module& ir, bool integer_mix) {
     AssertValid(ir, "before glsl.BuiltinPolyfill");
 
-    State{ir}.Process();
+    State{ir, integer_mix}.Process();
 
     return Success;
 }

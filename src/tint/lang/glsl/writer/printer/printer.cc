@@ -106,6 +106,7 @@ constexpr const char* kEXTGeometryShader = "GL_EXT_geometry_shader";
 constexpr const char* kEXTFragmentShaderBarycentric = "GL_EXT_fragment_shader_barycentric";
 constexpr const char* kEXTConservativeDepth = "GL_EXT_conservative_depth";
 constexpr const char* kARBShadingLanguage420pack = "GL_ARB_shading_language_420pack";
+constexpr const char* kARBExplicitUniformLocation = "GL_ARB_explicit_uniform_location";
 
 enum class LayoutFormat : uint8_t {
     kStd140,
@@ -1170,6 +1171,14 @@ class Printer : public tint::TextGenerator {
         // We need to use the same name for the immediate data structure and variable between
         // different pipeline stages.
         constexpr const char* kImmediateVarName = "tint_immediates";
+
+        // layout(location) on a uniform is core from desktop GLSL 4.30; below that it needs
+        // GL_ARB_explicit_uniform_location, which Dawn requires on such contexts.
+        if (!options_.version.IsES() &&
+            (options_.version.major_version < 4 ||
+             (options_.version.major_version == 4 && options_.version.minor_version < 3))) {
+            EmitExtension(kARBExplicitUniformLocation);
+        }
 
         auto out = Line();
         EmitLayoutLocation(out, {0}, std::nullopt);
