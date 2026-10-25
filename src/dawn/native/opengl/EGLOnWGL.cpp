@@ -29,6 +29,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -127,9 +128,11 @@ struct Display {
     PFN_wglSwapIntervalEXT swapInterval = nullptr;
     bool hasRobustness = false;
 
-    // A hidden window whose DC is used for surfaceless contexts.
+    // A hidden window whose DC is used for surfaceless contexts on the thread that initialized
+    // the display; other threads get their own (SurfacelessDC).
     HWND hiddenWindow = nullptr;
     HDC hiddenDC = nullptr;
+    DWORD hiddenThread = 0;
 
     // eglSwapInterval applies to the next swap of each surface; Dawn sets it outside of a
     // current scope, and wglSwapIntervalEXT needs one.
@@ -267,6 +270,7 @@ bool InitializeDisplay(Display& d) {
     if (d.hiddenDC == nullptr || !SetPixelFormatOnce(d.hiddenDC)) {
         return false;
     }
+    d.hiddenThread = ::GetCurrentThreadId();
 
     HGLRC bootstrap = d.createContext(d.hiddenDC);
     if (bootstrap == nullptr) {
@@ -292,6 +296,70 @@ bool InitializeDisplay(Display& d) {
 
     // Core contexts of a given version can only be made with WGL_ARB_create_context.
     return d.createContextAttribs != nullptr;
+}
+
+// A hidden window owned by one thread, destroyed when the thread exits.
+struct ThreadWindow {
+    HWND hwnd = nullptr;
+    HDC dc = nullptr;
+    ~ThreadWindow() {
+        if (hwnd == nullptr) {
+            return;
+        }
+        Display& d = GetDisplayState();
+        if (d.getCurrentDC != nullptr && d.getCurrentDC() == dc) {
+            d.makeCurrent(nullptr, nullptr);
+        }
+        ::ReleaseDC(hwnd, dc);
+        ::DestroyWindow(hwnd);
+    }
+};
+
+thread_local ThreadWindow tWindow;
+
+// The DC a surfaceless context is made current on. WGL needs a DC, and two threads with
+// contexts current on one DC at once make some drivers (AMD) fail wglMakeCurrent, so each
+// thread gets its own hidden window, with the pixel format of the display's.
+HDC SurfacelessDC(Display& d) {
+    if (::GetCurrentThreadId() == d.hiddenThread) {
+        return d.hiddenDC;
+    }
+    if (tWindow.dc == nullptr) {
+        HWND hwnd = CreateHiddenWindow();
+        HDC dc = hwnd != nullptr ? ::GetDC(hwnd) : nullptr;
+        int format = ::GetPixelFormat(d.hiddenDC);
+        PIXELFORMATDESCRIPTOR pfd = {};
+        if (dc == nullptr || format == 0 ||
+            ::DescribePixelFormat(d.hiddenDC, format, sizeof(pfd), &pfd) == 0 ||
+            !::SetPixelFormat(dc, format, &pfd)) {
+            if (dc != nullptr) {
+                ::ReleaseDC(hwnd, dc);
+            }
+            if (hwnd != nullptr) {
+                ::DestroyWindow(hwnd);
+            }
+            return d.hiddenDC;
+        }
+        tWindow.hwnd = hwnd;
+        tWindow.dc = dc;
+    }
+    return tWindow.dc;
+}
+
+// wglMakeCurrent, returning its Win32 error (0 on success) and logging a failure, since an EGL
+// error code alone can't tell a context busy on another thread from a pixel format mismatch.
+DWORD MakeCurrentLogged(Display& d, HDC dc, HGLRC rc) {
+    if (d.makeCurrent(dc, rc)) {
+        return 0;
+    }
+    DWORD error = ::GetLastError();
+    std::fprintf(stderr,
+                 "EGL-on-WGL: wglMakeCurrent(dc %p, rc %p) failed on thread %lu: Win32 error "
+                 "%lu (0x%lx)\n",
+                 static_cast<void*>(dc), static_cast<void*>(rc), ::GetCurrentThreadId(), error,
+                 error);
+    std::fflush(stderr);
+    return error != 0 ? error : ERROR_INVALID_FUNCTION;
 }
 
 void FlushPendingDeletes(Display& d) {
@@ -451,7 +519,7 @@ EGLContext EGLAPIENTRY CreateContext(EGLDisplay dpy,
     // The requested major/minor go straight to WGL. A failure (including a driver that refuses the
     // version) must be reported as EGL_NO_CONTEXT rather than falling back to an older context
     // here: eglCreateContext callers retry with a lower version themselves (see ContextEGL).
-    HGLRC rc = d.createContextAttribs(d.hiddenDC, shareRC, wglAttribs.data());
+    HGLRC rc = d.createContextAttribs(SurfacelessDC(d), shareRC, wglAttribs.data());
     if (rc == nullptr) {
         SetError(EGL_BAD_MATCH);
         return EGL_NO_CONTEXT;
@@ -561,7 +629,7 @@ EGLBoolean EGLAPIENTRY DestroySurface(EGLDisplay dpy, EGLSurface surf) {
     if (tState.draw == surface || tState.read == surface) {
         // EGL defers destruction of a current surface; rebind the context surfaceless instead.
         Display& d = GetDisplayState();
-        d.makeCurrent(tState.context != nullptr ? d.hiddenDC : nullptr,
+        d.makeCurrent(tState.context != nullptr ? SurfacelessDC(d) : nullptr,
                       tState.context != nullptr ? tState.context->rc : nullptr);
         tState.draw = nullptr;
         tState.read = nullptr;
@@ -742,9 +810,9 @@ EGLBoolean EGLAPIENTRY MakeCurrent(EGLDisplay dpy,
     if (drawSurface != readSurface) {
         return SetError(EGL_BAD_MATCH);
     }
-    HDC dc = drawSurface != nullptr ? drawSurface->dc : d.hiddenDC;
-    if (!d.makeCurrent(dc, context->rc)) {
-        return SetError(EGL_BAD_MATCH);
+    HDC dc = drawSurface != nullptr ? drawSurface->dc : SurfacelessDC(d);
+    if (DWORD error = MakeCurrentLogged(d, dc, context->rc); error != 0) {
+        return SetError(error == ERROR_BUSY ? EGL_BAD_ACCESS : EGL_BAD_MATCH);
     }
     tState.context = context;
     tState.draw = drawSurface;
