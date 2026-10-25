@@ -167,13 +167,28 @@ MaybeError PhysicalDevice::InitializeImpl() {
             // draws, integer varyings, GLSL 3.30). Compute resources are additionally reported as
             // unavailable when the context is below 4.3 without the ARB extensions (see
             // SupportsCompute). Below 4.2 layout(binding) in GLSL needs
-            // GL_ARB_shading_language_420pack, which the GLSL writer always emits.
+            // GL_ARB_shading_language_420pack, which the GLSL writer always emits, and below 4.3
+            // the immediate data's uniform location needs GL_ARB_explicit_uniform_location.
             DAWN_INVALID_IF(!mFunctions.IsAtLeastGL(3, 3), "Desktop OpenGL 3.3 is required.");
             DAWN_INVALID_IF(!mFunctions.IsAtLeastGL(4, 2) &&
                                 !mFunctions.IsGLExtensionSupported(
                                     "GL_ARB_shading_language_420pack"),
                             "GL_ARB_shading_language_420pack is required for desktop OpenGL "
                             "below 4.2.");
+            // The immediate data is a uniform at layout(location = 0), core from 4.3.
+            DAWN_INVALID_IF(!mFunctions.IsAtLeastGL(4, 3) &&
+                                !mFunctions.IsGLExtensionSupported(
+                                    "GL_ARB_explicit_uniform_location"),
+                            "GL_ARB_explicit_uniform_location is required for desktop OpenGL "
+                            "below 4.3.");
+            // Texture views (core from 4.3) need immutable storage (core from 4.2); a texture
+            // allocated with glTexImage can't be viewed with another dimension or layer range.
+            DAWN_INVALID_IF(!mFunctions.IsAtLeastGL(4, 2) &&
+                                !mFunctions.IsGLExtensionSupported("GL_ARB_texture_storage"),
+                            "GL_ARB_texture_storage is required for desktop OpenGL below 4.2.");
+            DAWN_INVALID_IF(!mFunctions.IsAtLeastGL(4, 3) &&
+                                !mFunctions.IsGLExtensionSupported("GL_ARB_texture_view"),
+                            "GL_ARB_texture_view is required for desktop OpenGL below 4.3.");
             break;
         default:
             DAWN_UNREACHABLE();

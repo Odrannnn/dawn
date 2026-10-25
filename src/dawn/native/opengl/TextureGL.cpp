@@ -190,6 +190,12 @@ MaybeError AllocateTexture(const OpenGLFunctions& gl,
         // from whatever buffer happens to be bound.
         DAWN_GL_TRY_ALWAYS_CHECK(gl, BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0));
 
+        // Desktop GL takes the sized internal format here; integer, float and depth textures are
+        // invalid with an unsized one. ES keeps the unsized format, which is what makes formats
+        // like GL_BGRA_EXT valid.
+        const GLint imageFormat =
+            gl.GetVersion().IsDesktop() ? format.internalFormat : format.format;
+
         // Array texture formats have the same depth for all mip levels.
         bool constantSizeForAllLevels =
             target == GL_TEXTURE_2D_ARRAY || target == GL_TEXTURE_CUBE_MAP_ARRAY;
@@ -205,13 +211,13 @@ MaybeError AllocateTexture(const OpenGLFunctions& gl,
                 case GL_TEXTURE_CUBE_MAP_ARRAY:
                 case GL_TEXTURE_3D:
                     DAWN_GL_TRY_ALWAYS_CHECK(
-                        gl, TexImage3D(target, level, format.format, levelSize.width,
+                        gl, TexImage3D(target, level, imageFormat, levelSize.width,
                                        levelSize.height, levelSize.depthOrArrayLayers, 0,
                                        format.format, format.type, nullptr));
                     break;
                 case GL_TEXTURE_2D:
                     DAWN_GL_TRY_ALWAYS_CHECK(
-                        gl, TexImage2D(target, level, format.format, levelSize.width,
+                        gl, TexImage2D(target, level, imageFormat, levelSize.width,
                                        levelSize.height, 0, format.format, format.type, nullptr));
                     break;
                 case GL_TEXTURE_CUBE_MAP:
@@ -219,7 +225,7 @@ MaybeError AllocateTexture(const OpenGLFunctions& gl,
                         GLenum faceTarget = GL_TEXTURE_CUBE_MAP_POSITIVE_X + faceIdx;
                         DAWN_GL_TRY_ALWAYS_CHECK(
                             gl,
-                            TexImage2D(faceTarget, level, format.format, levelSize.width,
+                            TexImage2D(faceTarget, level, imageFormat, levelSize.width,
                                        levelSize.height, 0, format.format, format.type, nullptr));
                     }
                     break;

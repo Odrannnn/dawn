@@ -262,7 +262,25 @@ MaybeError PipelineGL::InitializeBase(const OpenGLFunctions& gl,
         if (infoLogLength > 1) {
             std::vector<char> buffer(infoLogLength);
             DAWN_GL_TRY(gl, GetProgramInfoLog(mProgram, infoLogLength, nullptr, &buffer[0]));
-            return DAWN_VALIDATION_ERROR("Program link failed:\n%s", buffer.data());
+            // With parallel shader compilation, CompileShader doesn't check the compile status, so
+            // a shader that failed to compile only surfaces here. Report its log and source.
+            std::string compileErrors;
+            for (size_t i = 0; i < glShaders.size() && i < translatedShaders.size(); ++i) {
+                GLint compileStatus = GL_TRUE;
+                DAWN_GL_TRY(gl, GetShaderiv(glShaders[i], GL_COMPILE_STATUS, &compileStatus));
+                if (compileStatus != GL_FALSE) {
+                    continue;
+                }
+                GLint shaderLogLength = 0;
+                DAWN_GL_TRY(gl, GetShaderiv(glShaders[i], GL_INFO_LOG_LENGTH, &shaderLogLength));
+                std::vector<char> shaderLog(std::max(shaderLogLength, 1));
+                DAWN_GL_TRY(gl, GetShaderInfoLog(glShaders[i], shaderLogLength, nullptr,
+                                                 &shaderLog[0]));
+                compileErrors += "\n" + translatedShaders[i].glsl +
+                                 "\nShader compilation failed:\n" + shaderLog.data();
+            }
+            return DAWN_VALIDATION_ERROR("Program link failed:\n%s%s", buffer.data(),
+                                         compileErrors);
         }
     }
 
