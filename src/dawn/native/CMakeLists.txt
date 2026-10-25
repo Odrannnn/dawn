@@ -754,6 +754,11 @@ if (DAWN_ENABLE_OPENGL)
         "opengl/UtilsGL.cpp"
     )
 
+    if (WIN32 AND DAWN_ENABLE_DESKTOP_GL)
+        list(APPEND headers "opengl/EGLOnWGL.h")
+        list(APPEND sources "opengl/EGLOnWGL.cpp")
+    endif()
+
     list(APPEND conditional_private_depends dawn_khronos_platform)
 endif()
 

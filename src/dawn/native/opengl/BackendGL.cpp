@@ -37,6 +37,10 @@
 #include "src/dawn/native/opengl/DisplayEGL.h"
 #include "src/dawn/native/opengl/PhysicalDeviceGL.h"
 
+#if DAWN_PLATFORM_IS(WINDOWS)
+#include "src/dawn/native/opengl/EGLOnWGL.h"
+#endif
+
 namespace dawn::native::opengl {
 
 namespace {
@@ -130,6 +134,13 @@ std::vector<Ref<PhysicalDeviceBase>> Backend::DiscoverPhysicalDevices(
             DisplayEGL::CreateFromProcAndDisplay(GetType(), glGetProcOptions->getProc,
                                                  glGetProcOptions->display),
             angleVirtualizationGroup));
+#if DAWN_PLATFORM_IS(WINDOWS) && defined(DAWN_ENABLE_BACKEND_DESKTOP_GL)
+    } else if (GetType() == wgpu::BackendType::OpenGL) {
+        // Windows has no desktop GL EGL; emulate one on WGL. GLES still goes through ANGLE.
+        SwallowDiscoveryError(AppendNewDeviceFrom(
+            DisplayEGL::CreateFromProcAndDisplay(GetType(), GetEGLOnWGLGetProc(), EGL_NO_DISPLAY),
+            angleVirtualizationGroup));
+#endif
     } else {
         SwallowDiscoveryError(
             AppendNewDeviceFrom(DisplayEGL::CreateFromDynamicLoading(

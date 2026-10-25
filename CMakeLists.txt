@@ -101,6 +101,8 @@ elseif (WIN32)
     # Enable Vulkan in win32 compilation only
     # since UWP only supports d3d
     set(ENABLE_VULKAN ON)
+    # Desktop GL through EGLOnWGL (src/dawn/native/opengl/EGLOnWGL.cpp).
+    set(ENABLE_DESKTOP_GL ON)
   endif()
 elseif(APPLE)
   set(ENABLE_METAL ON)
