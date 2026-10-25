@@ -755,7 +755,7 @@ if (DAWN_ENABLE_OPENGL)
     )
 
     if (WIN32 AND DAWN_ENABLE_DESKTOP_GL)
-        list(APPEND headers "opengl/EGLOnWGL.h")
+        list(APPEND private_headers "opengl/EGLOnWGL.h")
         list(APPEND sources "opengl/EGLOnWGL.cpp")
     endif()
 
