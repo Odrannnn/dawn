@@ -16,10 +16,10 @@ jobs:
       source_sha: ${{ steps.source.outputs.sha }}
       release_tag: ${{ steps.release_tag.outputs.tag }}
     steps:
-      - name: Checkout latest main
+      - name: Checkout the dispatched branch
         uses: actions/checkout@v6
         with:
-          ref: main
+          ref: ${{ github.ref }}
 
       - name: Resolve source SHA
         id: source
@@ -82,7 +82,7 @@ jobs:
               -DCMAKE_SYSTEM_PROCESSOR=arm64
               -DPROTOC_EXECUTABLE=$GITHUB_WORKSPACE/host-protoc/protoc
     steps:
-      - name: Checkout latest main
+      - name: Checkout the resolved source
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.metadata.outputs.source_sha }}
@@ -198,5 +198,5 @@ jobs:
           target_commitish: ${{ needs.metadata.outputs.source_sha }}
           name: Dawn ${{ needs.metadata.outputs.release_tag }}
           body: |
-            Built from latest `main` at `${{ needs.metadata.outputs.source_sha }}`.
+            Built from `${{ github.ref_name }}` at `${{ needs.metadata.outputs.source_sha }}`.
           files: "*.tar.gz"
