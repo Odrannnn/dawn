@@ -91,7 +91,13 @@ MaybeError SwapChainEGL::Initialize(SwapChainBase* previousSwapChain) {
         DAWN_TRY(CreateEGLSurface(display));
     }
 
-    EGLint swapInterval = GetPresentMode() == wgpu::PresentMode::Immediate ? 0 : 1;
+    // GL has no mailbox: an unsynchronised swap is the closest (composited windows don't tear),
+    // where interval 1 held Mailbox to the refresh rate.
+    const wgpu::PresentMode presentMode = GetPresentMode();
+    EGLint swapInterval = presentMode == wgpu::PresentMode::Immediate ||
+                                  presentMode == wgpu::PresentMode::Mailbox
+                              ? 0
+                              : 1;
     display->egl->SwapInterval(display->GetDisplay(), swapInterval);
 
     return {};
