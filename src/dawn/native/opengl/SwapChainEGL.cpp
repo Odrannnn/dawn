@@ -124,9 +124,20 @@ MaybeError SwapChainEGL::PresentImpl() {
 
         DAWN_GL_TRY(gl, BindFramebuffer(GL_DRAW_FRAMEBUFFER, 0));
         DAWN_GL_TRY(gl, Scissor(0, 0, surfaceWidth, surfaceHeight));
+        // Desktop GL keeps GL_FRAMEBUFFER_SRGB on for sRGB textures, but drivers (AMD and NVIDIA
+        // on WGL) may hand out an sRGB-capable default framebuffer for a linear surface. The blit
+        // would then encode already-encoded texels again and wash the image out.
+        const bool linearSurface = GetFormat() != wgpu::TextureFormat::RGBA8UnormSrgb;
+        const bool toggleSrgb = linearSurface && gl.GetVersion().IsDesktop();
+        if (toggleSrgb) {
+            DAWN_GL_TRY(gl, Disable(GL_FRAMEBUFFER_SRGB));
+        }
         DAWN_GL_TRY(gl, BlitFramebuffer(0, 0, mTexture->GetWidth(Aspect::Color),
                                         mTexture->GetHeight(Aspect::Color), 0, surfaceHeight,
                                         surfaceWidth, 0, GL_COLOR_BUFFER_BIT, GL_LINEAR));
+        if (toggleSrgb) {
+            DAWN_GL_TRY(gl, Enable(GL_FRAMEBUFFER_SRGB));
+        }
 
         DAWN_GL_TRY(gl, DeleteFramebuffers(1, &readFbo));
 
