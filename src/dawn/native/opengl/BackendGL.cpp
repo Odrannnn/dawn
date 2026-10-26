@@ -78,12 +78,14 @@ std::vector<Ref<PhysicalDeviceBase>> Backend::DiscoverPhysicalDevices(
     }
 
     bool forceES31AndMinExtensions = false;
+    bool forceDesktopGL33 = false;
     if (auto* togglesDesc = options.Get<DawnTogglesDescriptor>()) {
         TogglesState toggles =
             TogglesState::CreateFromTogglesDescriptor(togglesDesc, ToggleStage::Adapter);
         if (toggles.IsEnabled(Toggle::GLForceES31AndNoExtensions)) {
             forceES31AndMinExtensions = true;
         }
+        forceDesktopGL33 = toggles.IsEnabled(Toggle::GLForceDesktopGL33);
     }
 
     std::vector<Ref<PhysicalDeviceBase>> devices;
@@ -107,7 +109,7 @@ std::vector<Ref<PhysicalDeviceBase>> Backend::DiscoverPhysicalDevices(
         Ref<PhysicalDevice> device;
         DAWN_TRY_ASSIGN(
             device, PhysicalDevice::Create(GetType(), std::move(display), forceES31AndMinExtensions,
-                                           angleVirtualizationGroup));
+                                           forceDesktopGL33, angleVirtualizationGroup));
         devices.push_back(device);
 
         return {};

@@ -108,6 +108,7 @@ bool IsSwiftShader(std::string_view renderer) {
 ResultOrError<Ref<PhysicalDevice>> PhysicalDevice::Create(wgpu::BackendType backendType,
                                                           Ref<DisplayEGL> display,
                                                           bool forceES31AndMinExtensions,
+                                                          bool forceDesktopGL33,
                                                           EGLint angleVirtualizationGroup) {
     // Create a temporary context and make it current during the creation of the PhysicalDevice so
     // that we can query the limits and other properties. Assumes that the limit are the same
@@ -118,6 +119,7 @@ ResultOrError<Ref<PhysicalDevice>> PhysicalDevice::Create(wgpu::BackendType back
                                     /*disableEGL15Robustness */ false,
                                     /*useANGLETextureSharing*/ false,
                                     /*forceES31AndMinExtensions*/ forceES31AndMinExtensions,
+                                    forceDesktopGL33,
                                     /*bindContextOnlyDuringUse*/ true, angleVirtualizationGroup));
 
     ContextEGL::ScopedMakeCurrent scopedCurrentContext;
@@ -126,7 +128,8 @@ ResultOrError<Ref<PhysicalDevice>> PhysicalDevice::Create(wgpu::BackendType back
     context->RequestRequiredExtensionsExplicitly();
 
     Ref<PhysicalDevice> physicalDevice =
-        AcquireRef(new PhysicalDevice(backendType, std::move(display), angleVirtualizationGroup));
+        AcquireRef(new PhysicalDevice(backendType, std::move(display), forceDesktopGL33,
+                                      angleVirtualizationGroup));
     DAWN_TRY(physicalDevice->Initialize());
 
     DAWN_TRY(scopedCurrentContext.End());
@@ -136,10 +139,12 @@ ResultOrError<Ref<PhysicalDevice>> PhysicalDevice::Create(wgpu::BackendType back
 
 PhysicalDevice::PhysicalDevice(wgpu::BackendType backendType,
                                Ref<DisplayEGL> display,
+                               bool forceDesktopGL33,
                                EGLint angleVirtualizationGroup)
     : PhysicalDeviceBase(backendType),
       mDisplay(std::move(display)),
-      mAngleVirtualizationGroup(angleVirtualizationGroup) {}
+      mAngleVirtualizationGroup(angleVirtualizationGroup),
+      mForceDesktopGL33(forceDesktopGL33) {}
 
 DisplayEGL* PhysicalDevice::GetDisplay() const {
     return mDisplay.Get();
@@ -151,7 +156,7 @@ bool PhysicalDevice::SupportsExternalImages() const {
 }
 
 MaybeError PhysicalDevice::InitializeImpl() {
-    DAWN_TRY(mFunctions.Initialize(mDisplay->egl->GetProcAddress));
+    DAWN_TRY(mFunctions.Initialize(mDisplay->egl->GetProcAddress, mForceDesktopGL33));
 
     // In some cases (like like of EGL_KHR_create_context) we don't know before this point that we
     // got a GL context that supports the required version. Check it now.
@@ -212,6 +217,9 @@ MaybeError PhysicalDevice::InitializeImpl() {
 
     mDriverDescription = std::string("OpenGL version ") +
                          reinterpret_cast<const char*>(mFunctions.GetString(GL_VERSION));
+    if (mForceDesktopGL33 && GetBackendType() == wgpu::BackendType::OpenGL) {
+        mDriverDescription += " (treated as 3.3)";
+    }
 
     if (mName.find("SwiftShader") != std::string::npos) {
         mAdapterType = wgpu::AdapterType::CPU;
@@ -222,6 +230,14 @@ MaybeError PhysicalDevice::InitializeImpl() {
 
 void PhysicalDevice::InitializeSupportedFeaturesImpl() {
     EnableFeature(Feature::StaticSamplers);
+
+    // TimestampQuery: glQueryCounter(GL_TIMESTAMP) (GL 3.3), resolved on the GPU through a query
+    // buffer (GL 4.4 or ARB_query_buffer_object) so reading the results never stalls the CPU.
+    if (mFunctions.IsAtLeastGL(4, 4) ||
+        (mFunctions.IsAtLeastGL(3, 3) &&
+         mFunctions.IsGLExtensionSupported("GL_ARB_query_buffer_object"))) {
+        EnableFeature(Feature::TimestampQuery);
+    }
 
     // TextureCompressionBC
     {
@@ -630,21 +646,35 @@ ResultOrError<Ref<DeviceBase>> PhysicalDevice::CreateDeviceImpl(
     std::unique_ptr<ContextEGL> context;
     DAWN_TRY_ASSIGN(context, ContextEGL::Create(mDisplay, GetBackendType(), useRobustness,
                                                 disableEGL15Robustness, useANGLETextureSharing,
-                                                forceES31AndMinExtensions, bindContextOnlyDuringUse,
+                                                forceES31AndMinExtensions, mForceDesktopGL33,
+                                                bindContextOnlyDuringUse,
                                                 mAngleVirtualizationGroup));
-    std::unique_ptr<ContextEGL> pipelineContext;
+    // Pipelines compile on contexts sharing the queue's, one per compiling thread up to
+    // kMaxPipelineContexts, so program links run in parallel. Only the first is required.
+    constexpr size_t kMaxPipelineContexts = 4;
+    std::vector<std::unique_ptr<ContextEGL>> pipelineContexts;
     if (deviceToggles.IsEnabled(Toggle::GLAllowContextOnMultiThreads) &&
         !deviceToggles.IsEnabled(Toggle::GLDefer)) {
-        DAWN_TRY_ASSIGN(pipelineContext,
-                        ContextEGL::Create(mDisplay, GetBackendType(), useRobustness,
-                                           disableEGL15Robustness, useANGLETextureSharing,
-                                           forceES31AndMinExtensions,
-                                           /*bindContextOnlyDuringUse=*/true,
-                                           mAngleVirtualizationGroup, context->GetRawContext()));
+        for (size_t i = 0; i < kMaxPipelineContexts; ++i) {
+            auto pipelineContext =
+                ContextEGL::Create(mDisplay, GetBackendType(), useRobustness,
+                                   disableEGL15Robustness, useANGLETextureSharing,
+                                   forceES31AndMinExtensions, mForceDesktopGL33,
+                                   /*bindContextOnlyDuringUse=*/true, mAngleVirtualizationGroup,
+                                   context->GetRawContext());
+            if (pipelineContext.IsError()) {
+                if (i == 0) {
+                    return pipelineContext.AcquireError();
+                }
+                pipelineContext.AcquireError();
+                break;
+            }
+            pipelineContexts.push_back(pipelineContext.AcquireSuccess());
+        }
     }
 
     return Device::Create(adapter, descriptor, mFunctions, std::move(context),
-                          std::move(pipelineContext), deviceToggles, std::move(lostEvent));
+                          std::move(pipelineContexts), deviceToggles, std::move(lostEvent));
 }
 
 bool PhysicalDevice::SupportsFeatureLevel(wgpu::FeatureLevel featureLevel,

@@ -47,7 +47,8 @@ using MaxShaderCompilerThreadsKHRProc = void(KHRONOS_APIENTRY*)(GLuint count);
 
 struct OpenGLFunctions : OpenGLFunctionsBase {
   public:
-    MaybeError Initialize(GLGetProcProc getProc);
+    // capDesktopAtGL33 treats a desktop context of any newer version as 3.3 (GLForceDesktopGL33).
+    MaybeError Initialize(GLGetProcProc getProc, bool capDesktopAtGL33 = false);
 
     const OpenGLVersion& GetVersion() const;
     bool IsAtLeastGL(uint32_t majorVersion, uint32_t minorVersion) const;
@@ -63,6 +64,7 @@ struct OpenGLFunctions : OpenGLFunctionsBase {
 
   private:
     OpenGLVersion mVersion;
+    bool mCappedAtGL33 = false;
 };
 
 }  // namespace dawn::native::opengl

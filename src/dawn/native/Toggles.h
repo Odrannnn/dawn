@@ -165,6 +165,7 @@ enum class Toggle {
     D3D12ExpandShaderResourceStateTransitionsToCopySource,
     GLDepthBiasModifier,
     GLForceES31AndNoExtensions,
+    GLForceDesktopGL33,
     VulkanMonolithicPipelineCache,
     VulkanIncompletePipelineCacheWorkaround,
     MetalSerializeTimestampGenerationAndResolution,

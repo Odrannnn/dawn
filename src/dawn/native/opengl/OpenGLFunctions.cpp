@@ -31,8 +31,13 @@
 
 namespace dawn::native::opengl {
 
-MaybeError OpenGLFunctions::Initialize(GLGetProcProc getProc) {
+MaybeError OpenGLFunctions::Initialize(GLGetProcProc getProc, bool capDesktopAtGL33) {
     DAWN_TRY(mVersion.Initialize(getProc));
+    if (capDesktopAtGL33 && mVersion.IsDesktop()) {
+        // Drivers return their newest compatible version for a 3.3 request; take it as 3.3.
+        mVersion.CapAt(3, 3);
+        mCappedAtGL33 = true;
+    }
     if (mVersion.IsES()) {
 #if defined(DAWN_ENABLE_BACKEND_OPENGLES)
         DAWN_TRY(LoadOpenGLESProcs(getProc, mVersion.GetMajor(), mVersion.GetMinor()));
@@ -78,6 +83,14 @@ MaybeError OpenGLFunctions::Initialize(GLGetProcProc getProc) {
         if (!IsAtLeastGL(4, 1) && IsGLExtensionSupported("GL_ARB_ES2_compatibility")) {
             DepthRangef = reinterpret_cast<PFNGLDEPTHRANGEFPROC>(getProc("glDepthRangef"));
             ClearDepthf = reinterpret_cast<PFNGLCLEARDEPTHFPROC>(getProc("glClearDepthf"));
+        }
+        // Without these the program binary cache is off and every pipeline compiles each run.
+        if (!IsAtLeastGL(4, 1) && IsGLExtensionSupported("GL_ARB_get_program_binary")) {
+            GetProgramBinary =
+                reinterpret_cast<PFNGLGETPROGRAMBINARYPROC>(getProc("glGetProgramBinary"));
+            ProgramBinary = reinterpret_cast<PFNGLPROGRAMBINARYPROC>(getProc("glProgramBinary"));
+            ProgramParameteri =
+                reinterpret_cast<PFNGLPROGRAMPARAMETERIPROC>(getProc("glProgramParameteri"));
         }
         if (!IsAtLeastGL(4, 3) && IsGLExtensionSupported("GL_ARB_texture_view")) {
             TextureView = reinterpret_cast<PFNGLTEXTUREVIEWPROC>(getProc("glTextureView"));
@@ -128,6 +141,11 @@ bool OpenGLFunctions::SupportsParallelShaderCompile() const {
 bool OpenGLFunctions::SupportsCompute() const {
     if (IsAtLeastGL(4, 3) || IsAtLeastGLES(3, 1)) {
         return true;
+    }
+    // A forced 3.3 context stands in for a 3.3-only GPU: GLSL 3.30 can't declare the std430
+    // storage blocks even where the driver exposes the ARB compute extensions.
+    if (mCappedAtGL33) {
+        return false;
     }
     return IsGLExtensionSupported("GL_ARB_compute_shader") &&
            IsGLExtensionSupported("GL_ARB_shader_storage_buffer_object") &&

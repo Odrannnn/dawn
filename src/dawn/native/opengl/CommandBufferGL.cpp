@@ -839,6 +839,14 @@ void SetPrimitiveRestart(const OpenGLFunctions& gl, GLenum topology, GLenum inde
     }
 }
 
+// Records a GL_TIMESTAMP query: the GPU writes its clock (ns) once the preceding commands finish.
+MaybeError RecordWriteTimestamp(const OpenGLFunctions& gl,
+                                QuerySetBase* querySet,
+                                QueryIndex queryIndex) {
+    DAWN_GL_TRY(gl, QueryCounter(ToBackend(querySet)->Get(queryIndex), GL_TIMESTAMP));
+    return {};
+}
+
 // Reads the arguments of an indirect draw back to the CPU. Only used when the context has no
 // GL_ARB_draw_indirect (desktop OpenGL below 4.0), where the draw has to be issued as a
 // non-indirect draw instead.
@@ -890,7 +898,7 @@ MaybeError CommandBuffer::Execute(const OpenGLFunctions& gl) {
     while (mCommands.NextCommandId(&type)) {
         switch (type) {
             case Command::BeginComputePass: {
-                mCommands.NextCommand<BeginComputePassCmd>();
+                auto* cmd = mCommands.NextCommand<BeginComputePassCmd>();
                 for (TextureBase* texture :
                      GetResourceUsages().computePasses[nextComputePassNumber].referencedTextures) {
                     DAWN_TRY(ToBackend(texture)->SynchronizeTextureBeforeUse());
@@ -899,7 +907,7 @@ MaybeError CommandBuffer::Execute(const OpenGLFunctions& gl) {
                      GetResourceUsages().computePasses[nextComputePassNumber].dispatchUsages) {
                     DAWN_TRY(LazyClearSyncScope(scope));
                 }
-                DAWN_TRY(ExecuteComputePass(gl));
+                DAWN_TRY(ExecuteComputePass(cmd, gl));
 
                 nextComputePassNumber++;
                 break;
@@ -1207,6 +1215,30 @@ MaybeError CommandBuffer::Execute(const OpenGLFunctions& gl) {
                 DAWN_TRY(
                     destination->EnsureDataInitializedAsDestination(cmd->destinationOffset, size));
 
+                if (querySet->GetQueryType() == wgpu::QueryType::Timestamp) {
+                    // Zero the range so queries never written read 0, then have the GPU copy
+                    // each written result into the buffer through GL_QUERY_BUFFER: the CPU
+                    // never waits for the results (TimestampQuery needs query buffer objects).
+                    std::vector<uint64_t> zeros(uint32_t{cmd->queryCount}, 0);
+                    DAWN_GL_TRY(gl, BindBuffer(GL_ARRAY_BUFFER, destination->GetHandle()));
+                    DAWN_GL_TRY(gl, BufferSubData(GL_ARRAY_BUFFER,
+                                                  checked_cast<GLintptr>(cmd->destinationOffset),
+                                                  checked_cast<GLsizeiptr>(size), zeros.data()));
+                    DAWN_GL_TRY(gl, BindBuffer(GL_QUERY_BUFFER, destination->GetHandle()));
+                    for (QueryIndex i : Range(cmd->queryCount)) {
+                        if (!querySet->IsQueryAvailable(cmd->firstQuery + i)) {
+                            continue;
+                        }
+                        const uintptr_t offset =
+                            cmd->destinationOffset + uint64_t{uint32_t{i}} * sizeof(uint64_t);
+                        DAWN_GL_TRY(gl, GetQueryObjectui64v(querySet->Get(cmd->firstQuery + i),
+                                                            GL_QUERY_RESULT,
+                                                            reinterpret_cast<GLuint64*>(offset)));
+                    }
+                    DAWN_GL_TRY(gl, BindBuffer(GL_QUERY_BUFFER, 0));
+                    break;
+                }
+
                 ityp::vector<QueryIndex, uint64_t> values(cmd->queryCount);
 
                 for (QueryIndex i : Range(cmd->queryCount)) {
@@ -1230,7 +1262,10 @@ MaybeError CommandBuffer::Execute(const OpenGLFunctions& gl) {
             }
 
             case Command::WriteTimestamp: {
-                return DAWN_UNIMPLEMENTED_ERROR("WriteTimestamp unimplemented");
+                WriteTimestampCmd* cmd = mCommands.NextCommand<WriteTimestampCmd>();
+                DAWN_TRY(RecordWriteTimestamp(gl, cmd->querySet.Get(), cmd->queryIndex));
+                UpdateQueryAvailability(cmd);
+                break;
             }
 
             case Command::InsertDebugMarker:
@@ -1270,7 +1305,14 @@ MaybeError CommandBuffer::Execute(const OpenGLFunctions& gl) {
     return {};
 }
 
-MaybeError CommandBuffer::ExecuteComputePass(const OpenGLFunctions& gl) {
+MaybeError CommandBuffer::ExecuteComputePass(BeginComputePassCmd* computePass,
+                                             const OpenGLFunctions& gl) {
+    const TimestampWrites& timestampWrites = computePass->timestampWrites;
+    if (timestampWrites.beginningOfPassWriteIndex != kQuerySetIndexUndefinedTyped) {
+        DAWN_TRY(RecordWriteTimestamp(gl, timestampWrites.querySet.Get(),
+                                      timestampWrites.beginningOfPassWriteIndex));
+    }
+
     ComputePipeline* lastPipeline = nullptr;
     BindGroupTracker bindGroupTracker = {};
 
@@ -1280,6 +1322,11 @@ MaybeError CommandBuffer::ExecuteComputePass(const OpenGLFunctions& gl) {
         switch (type) {
             case Command::EndComputePass: {
                 mCommands.NextCommand<EndComputePassCmd>();
+                if (timestampWrites.endOfPassWriteIndex != kQuerySetIndexUndefinedTyped) {
+                    DAWN_TRY(RecordWriteTimestamp(gl, timestampWrites.querySet.Get(),
+                                                  timestampWrites.endOfPassWriteIndex));
+                }
+                UpdateQueryAvailability(timestampWrites);
                 return {};
             }
 
@@ -1350,7 +1397,10 @@ MaybeError CommandBuffer::ExecuteComputePass(const OpenGLFunctions& gl) {
             }
 
             case Command::WriteTimestamp: {
-                return DAWN_UNIMPLEMENTED_ERROR("WriteTimestamp unimplemented");
+                WriteTimestampCmd* cmd = mCommands.NextCommand<WriteTimestampCmd>();
+                DAWN_TRY(RecordWriteTimestamp(gl, cmd->querySet.Get(), cmd->queryIndex));
+                UpdateQueryAvailability(cmd);
+                break;
             }
 
             case Command::SetImmediates: {
@@ -1373,6 +1423,12 @@ MaybeError CommandBuffer::ExecuteComputePass(const OpenGLFunctions& gl) {
 MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
                                             const OpenGLFunctions& gl,
                                             PassIndex renderPassIndex) {
+    const TimestampWrites& timestampWrites = renderPass->timestampWrites;
+    if (timestampWrites.beginningOfPassWriteIndex != kQuerySetIndexUndefinedTyped) {
+        DAWN_TRY(RecordWriteTimestamp(gl, timestampWrites.querySet.Get(),
+                                      timestampWrites.beginningOfPassWriteIndex));
+    }
+
     GLuint fbo = 0;
 
     const IndirectDrawMetadata& metadata = GetIndirectDrawMetadata()[renderPassIndex];
@@ -1741,6 +1797,11 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
                                         attachmentsToDiscard.data()));
                 }
                 DAWN_GL_TRY(gl, DeleteFramebuffers(1, &fbo));
+                if (timestampWrites.endOfPassWriteIndex != kQuerySetIndexUndefinedTyped) {
+                    DAWN_TRY(RecordWriteTimestamp(gl, timestampWrites.querySet.Get(),
+                                                  timestampWrites.endOfPassWriteIndex));
+                }
+                UpdateQueryAvailability(timestampWrites);
                 return {};
             }
 
@@ -1811,8 +1872,12 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
                 break;
             }
 
-            case Command::WriteTimestamp:
-                return DAWN_UNIMPLEMENTED_ERROR("WriteTimestamp unimplemented");
+            case Command::WriteTimestamp: {
+                WriteTimestampCmd* cmd = mCommands.NextCommand<WriteTimestampCmd>();
+                DAWN_TRY(RecordWriteTimestamp(gl, cmd->querySet.Get(), cmd->queryIndex));
+                UpdateQueryAvailability(cmd);
+                break;
+            }
 
             default: {
                 DAWN_TRY(DoRenderBundleCommand(&mCommands, type));

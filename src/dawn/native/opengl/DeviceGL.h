@@ -28,8 +28,10 @@
 #ifndef SRC_DAWN_NATIVE_OPENGL_DEVICEGL_H_
 #define SRC_DAWN_NATIVE_OPENGL_DEVICEGL_H_
 
+#include <condition_variable>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -62,7 +64,7 @@ class Device final : public DeviceBase {
                                              const UnpackedPtr<DeviceDescriptor>& descriptor,
                                              const OpenGLFunctions& functions,
                                              std::unique_ptr<ContextEGL> context,
-                                             std::unique_ptr<ContextEGL> pipelineContext,
+                                             std::vector<std::unique_ptr<ContextEGL>> pipelineContexts,
                                              const TogglesState& deviceToggles,
                                              Ref<DeviceBase::DeviceLostEvent>&& lostEvent);
     ~Device() override;
@@ -87,7 +89,7 @@ class Device final : public DeviceBase {
     //    - In this case, the 2nd EnqueueGL's work will run immediately.
     template <typename Fn>
     MaybeError EnqueueGL(ExecutionQueueBase::SubmitMode submitMode, Fn&& work) {
-        if (mPipelineContext != nullptr && mPipelineContext->IsInScopedMakeCurrent()) {
+        if (IsInPipelineContext()) {
             MarkGLUsed(submitMode);
             return work(mGL);
         }
@@ -202,12 +204,18 @@ class Device final : public DeviceBase {
 
     template <typename Fn>
     auto ExecutePipelineGL(Fn&& work) -> std::invoke_result_t<Fn, const OpenGLFunctions&> {
-        if (mPipelineContext == nullptr) {
+        if (mPipelineContexts.empty()) {
             return ExecuteGL(ExecutionQueueBase::SubmitMode::Normal, std::forward<Fn>(work));
         }
+        if (IsInPipelineContext()) {
+            return work(mGL);
+        }
 
+        // Each pipeline context compiles on its own, so up to one pipeline per context links at
+        // once; a thread that finds them all busy waits for one.
+        PipelineContextLease lease(this);
         ContextEGL::ScopedMakeCurrent scopedCurrentContext;
-        DAWN_TRY_ASSIGN(scopedCurrentContext, mPipelineContext->MakeCurrent());
+        DAWN_TRY_ASSIGN(scopedCurrentContext, lease.context->MakeCurrent());
 
         if (mGL.MaxShaderCompilerThreadsKHR != nullptr) {
             mGL.MaxShaderCompilerThreadsKHR(0xffffffffu);
@@ -279,7 +287,7 @@ class Device final : public DeviceBase {
            const UnpackedPtr<DeviceDescriptor>& descriptor,
            const OpenGLFunctions& functions,
            std::unique_ptr<ContextEGL> context,
-           std::unique_ptr<ContextEGL> pipelineContext,
+           std::vector<std::unique_ptr<ContextEGL>> pipelineContexts,
            const TogglesState& deviceToggles,
            Ref<DeviceBase::DeviceLostEvent>&& lostEvent);
 
@@ -333,7 +341,20 @@ class Device final : public DeviceBase {
 
     GLFormatTable mFormatTable;
     std::unique_ptr<ContextEGL> mContext;
-    std::unique_ptr<ContextEGL> mPipelineContext;
+    // Contexts sharing mContext's objects, for compiling pipelines off the queue's context
+    // (GLAllowContextOnMultiThreads); the free ones are in mFreePipelineContexts.
+    std::vector<std::unique_ptr<ContextEGL>> mPipelineContexts;
+    std::mutex mPipelineContextMutex;
+    std::condition_variable mPipelineContextFreed;
+    std::vector<ContextEGL*> mFreePipelineContexts;
+
+    struct PipelineContextLease {
+        explicit PipelineContextLease(Device* device);
+        ~PipelineContextLease();
+        Device* device;
+        ContextEGL* context;
+    };
+    bool IsInPipelineContext() const;
     float mMaxTextureMaxAnisotropy = 0;
 
     // Maintain an internal uniform buffer to store extra information needed by shader emulation for

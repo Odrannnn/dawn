@@ -132,12 +132,12 @@ ResultOrError<Ref<Device>> Device::Create(AdapterBase* adapter,
                                           const UnpackedPtr<DeviceDescriptor>& descriptor,
                                           const OpenGLFunctions& functions,
                                           std::unique_ptr<ContextEGL> context,
-                                          std::unique_ptr<ContextEGL> pipelineContext,
+                                          std::vector<std::unique_ptr<ContextEGL>> pipelineContexts,
                                           const TogglesState& deviceToggles,
                                           Ref<DeviceBase::DeviceLostEvent>&& lostEvent) {
     Ref<Device> device =
         AcquireRef(new Device(adapter, descriptor, functions, std::move(context),
-                              std::move(pipelineContext), deviceToggles, std::move(lostEvent)));
+                              std::move(pipelineContexts), deviceToggles, std::move(lostEvent)));
     DAWN_TRY(device->Initialize(descriptor));
     return device;
 }
@@ -146,13 +146,42 @@ Device::Device(AdapterBase* adapter,
                const UnpackedPtr<DeviceDescriptor>& descriptor,
                const OpenGLFunctions& functions,
                std::unique_ptr<ContextEGL> context,
-               std::unique_ptr<ContextEGL> pipelineContext,
+               std::vector<std::unique_ptr<ContextEGL>> pipelineContexts,
                const TogglesState& deviceToggles,
                Ref<DeviceBase::DeviceLostEvent>&& lostEvent)
     : DeviceBase(adapter, descriptor, deviceToggles, std::move(lostEvent)),
       mGL(functions),
       mContext(std::move(context)),
-      mPipelineContext(std::move(pipelineContext)) {}
+      mPipelineContexts(std::move(pipelineContexts)) {
+    for (const auto& pipelineContext : mPipelineContexts) {
+        mFreePipelineContexts.push_back(pipelineContext.get());
+    }
+}
+
+Device::PipelineContextLease::PipelineContextLease(Device* device) : device(device) {
+    std::unique_lock<std::mutex> lock(device->mPipelineContextMutex);
+    device->mPipelineContextFreed.wait(lock,
+                                       [device] { return !device->mFreePipelineContexts.empty(); });
+    context = device->mFreePipelineContexts.back();
+    device->mFreePipelineContexts.pop_back();
+}
+
+Device::PipelineContextLease::~PipelineContextLease() {
+    {
+        std::lock_guard<std::mutex> lock(device->mPipelineContextMutex);
+        device->mFreePipelineContexts.push_back(context);
+    }
+    device->mPipelineContextFreed.notify_one();
+}
+
+bool Device::IsInPipelineContext() const {
+    for (const auto& pipelineContext : mPipelineContexts) {
+        if (pipelineContext->IsInScopedMakeCurrent()) {
+            return true;
+        }
+    }
+    return false;
+}
 
 Device::~Device() {
     Destroy(DestroyReason::CppDestructor);

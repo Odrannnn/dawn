@@ -31,6 +31,7 @@
 #include "src/dawn/native/CommandBuffer.h"
 
 namespace dawn::native {
+struct BeginComputePassCmd;
 struct BeginRenderPassCmd;
 }  // namespace dawn::native
 
@@ -46,7 +47,7 @@ class CommandBuffer final : public CommandBufferBase {
     MaybeError Execute(const OpenGLFunctions& gl);
 
   private:
-    MaybeError ExecuteComputePass(const OpenGLFunctions& gl);
+    MaybeError ExecuteComputePass(BeginComputePassCmd* computePass, const OpenGLFunctions& gl);
     MaybeError ExecuteRenderPass(BeginRenderPassCmd* renderPass,
                                  const OpenGLFunctions& gl,
                                  PassIndex renderPassIndex);

@@ -52,6 +52,7 @@ class ContextEGL : NonMovable {
                                                              bool disableEGL15Robustness,
                                                              bool useANGLETextureSharing,
                                                              bool forceES31AndMinExtensions,
+                                                             bool forceDesktopGL33,
                                                              bool bindContextOnlyDuringUse,
                                                              EGLint angleVirtualizationGroup,
                                                              EGLContext sharedContext = EGL_NO_CONTEXT);
@@ -118,6 +119,7 @@ class ContextEGL : NonMovable {
                           bool useANGLETextureSharing,
                           bool disableEGL15Robustness,
                           bool forceES31AndMinExtensions,
+                          bool forceDesktopGL33,
                           EGLint angleVirtualizationGroup,
                           EGLContext sharedContext);
 

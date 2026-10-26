@@ -690,6 +690,12 @@ static constexpr ToggleEnumAndInfoList kToggleNameAndInfoList = {{
       "Compat spec, which for OpenGLES is version 3.1 with no extensions. This toggle is used by "
       "end2end testing.",
       "crbug.com/382084196", ToggleStage::Adapter}},
+    {Toggle::GLForceDesktopGL33,
+     {"gl_force_desktop_gl_33",
+      "Create desktop OpenGL contexts as 3.3 core and treat the driver as OpenGL 3.3 even when it "
+      "provides more, so the 3.3 code paths (GLSL 330, ARB extension fallbacks, no compute) can "
+      "be exercised on newer hardware.",
+      "https://github.com/Odrannnn/MetroidPrimePort/issues/202", ToggleStage::Adapter}},
     {Toggle::VulkanMonolithicPipelineCache,
      {"vulkan_monolithic_pipeline_cache",
       "Use a monolithic VkPipelineCache per device. The embedder is responsible for calling "

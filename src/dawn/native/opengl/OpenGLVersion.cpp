@@ -93,4 +93,11 @@ bool OpenGLVersion::IsAtLeast(uint32_t majorVersion, uint32_t minorVersion) cons
     return std::tie(mMajorVersion, mMinorVersion) >= std::tie(majorVersion, minorVersion);
 }
 
+void OpenGLVersion::CapAt(uint32_t majorVersion, uint32_t minorVersion) {
+    if (IsAtLeast(majorVersion, minorVersion)) {
+        mMajorVersion = majorVersion;
+        mMinorVersion = minorVersion;
+    }
+}
+
 }  // namespace dawn::native::opengl

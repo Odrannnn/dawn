@@ -88,6 +88,7 @@ ResultOrError<std::unique_ptr<ContextEGL>> ContextEGL::Create(Ref<DisplayEGL> di
                                                               bool disableEGL15Robustness,
                                                               bool useANGLETextureSharing,
                                                               bool forceES31AndMinExtensions,
+                                                              bool forceDesktopGL33,
                                                               bool bindContextOnlyDuringUse,
                                                               EGLint angleVirtualizationGroup,
                                                               EGLContext sharedContext) {
@@ -95,7 +96,7 @@ ResultOrError<std::unique_ptr<ContextEGL>> ContextEGL::Create(Ref<DisplayEGL> di
         std::unique_ptr<ContextEGL>(new ContextEGL(std::move(display), bindContextOnlyDuringUse));
     DAWN_TRY(context->Initialize(backend, useRobustness, disableEGL15Robustness,
                                  useANGLETextureSharing, forceES31AndMinExtensions,
-                                 angleVirtualizationGroup, sharedContext));
+                                 forceDesktopGL33, angleVirtualizationGroup, sharedContext));
     return std::move(context);
 }
 
@@ -122,6 +123,7 @@ MaybeError ContextEGL::Initialize(wgpu::BackendType backend,
                                   bool disableEGL15Robustness,
                                   bool useANGLETextureSharing,
                                   bool forceES31AndMinExtensions,
+                                  bool forceDesktopGL33,
                                   EGLint angleVirtualizationGroup,
                                   EGLContext sharedContext) {
     const EGLFunctions& egl = mDisplay->egl.get();
@@ -159,8 +161,9 @@ MaybeError ContextEGL::Initialize(wgpu::BackendType backend,
                 // Ask for 4.4 first: it is the version the backend is primarily tested against and
                 // it provides compute. If the driver cannot create it, a 3.3 core context is
                 // retried below (graphics only, see PhysicalDevice::InitializeImpl).
-                AddAttrib(EGL_CONTEXT_MAJOR_VERSION, 4);
-                AddAttrib(EGL_CONTEXT_MINOR_VERSION, 4);
+                // GLForceDesktopGL33 asks for 3.3 directly.
+                AddAttrib(EGL_CONTEXT_MAJOR_VERSION, forceDesktopGL33 ? 3 : 4);
+                AddAttrib(EGL_CONTEXT_MINOR_VERSION, forceDesktopGL33 ? 3 : 4);
                 break;
             default:
                 DAWN_UNREACHABLE();

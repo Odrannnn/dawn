@@ -47,6 +47,8 @@ struct OpenGLVersion {
     uint32_t GetMajor() const;
     uint32_t GetMinor() const;
     bool IsAtLeast(uint32_t majorVersion, uint32_t minorVersion) const;
+    // Lowers the version to majorVersion.minorVersion when it is newer.
+    void CapAt(uint32_t majorVersion, uint32_t minorVersion);
 
   private:
     uint32_t mMajorVersion;
