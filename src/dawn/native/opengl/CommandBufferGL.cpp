@@ -1928,7 +1928,15 @@ MaybeError DoTexSubImage(const OpenGLFunctions& gl,
         // See OpenGL ES 3.2 SPEC Chapter 8.4.1, "Pixel Storage Modes and Pixel
         // Buffer Objects" for more details. For Desktop GL, we use row-by-row
         // copies only for uploads where bytesPerRow is not a multiple of byteSize.
-        if (bytesPerRow % blockInfo.byteSize == 0 && gl.GetVersion().IsDesktop()) {
+        // Also only for tightly packed rows (and images, for a 3D or array copy): Intel's
+        // Windows GL driver for Haswell (20.19.15.x) ignores GL_UNPACK_ROW_LENGTH for
+        // compressed uploads and reads the second block row right after the first, so a
+        // copy with rows padded to 256 bytes uploads garbage below the first block row.
+        const bool tightRows = bytesPerRow == rowSize;
+        const bool tightImages = copySize.depthOrArrayLayers == TexelCount{1u} ||
+                                 rowsPerImage == blockCopySize.height;
+        if (bytesPerRow % blockInfo.byteSize == 0 && gl.GetVersion().IsDesktop() && tightRows &&
+            tightImages) {
             const BlockCount blocksPerRow = blockInfo.BytesToBlocks(bytesPerRow);
 
             // rowSize is already in bytes: the rest is a block count, not more bytes
