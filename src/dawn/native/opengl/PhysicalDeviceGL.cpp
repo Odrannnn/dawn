@@ -186,14 +186,13 @@ MaybeError PhysicalDevice::InitializeImpl() {
                                     "GL_ARB_explicit_uniform_location"),
                             "GL_ARB_explicit_uniform_location is required for desktop OpenGL "
                             "below 4.3.");
-            // Texture views (core from 4.3) need immutable storage (core from 4.2); a texture
-            // allocated with glTexImage can't be viewed with another dimension or layer range.
+            // Immutable storage (core from 4.2): a texture allocated with glTexImage can't be
+            // viewed with another dimension or layer range.
             DAWN_INVALID_IF(!mFunctions.IsAtLeastGL(4, 2) &&
                                 !mFunctions.IsGLExtensionSupported("GL_ARB_texture_storage"),
                             "GL_ARB_texture_storage is required for desktop OpenGL below 4.2.");
-            DAWN_INVALID_IF(!mFunctions.IsAtLeastGL(4, 3) &&
-                                !mFunctions.IsGLExtensionSupported("GL_ARB_texture_view"),
-                            "GL_ARB_texture_view is required for desktop OpenGL below 4.3.");
+            // GL_ARB_texture_view is not required: the adapter is Compatibility only, and a
+            // Compatibility device never makes a distinct view (RequiresCreatingNewTextureView).
             break;
         default:
             DAWN_UNREACHABLE();
