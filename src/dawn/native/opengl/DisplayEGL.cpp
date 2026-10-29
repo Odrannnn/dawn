@@ -28,10 +28,12 @@
 #include "src/dawn/native/opengl/DisplayEGL.h"
 
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "absl/container/flat_hash_set.h"
 #include "absl/strings/str_split.h"
+#include "src/utils/platform.h"
 
 namespace dawn::native::opengl {
 
@@ -84,6 +86,14 @@ DisplayEGL::~DisplayEGL() {
 MaybeError DisplayEGL::InitializeWithDynamicLoading(const char* libName,
                                                     std::span<const std::string> searchPaths) {
     std::string err;
+#if DAWN_PLATFORM_IS(LINUX) && !DAWN_PLATFORM_IS(ANDROID)
+    // Distributions ship the unversioned libEGL.so only in their -dev packages; the runtime
+    // package has libEGL.so.1, so try that first.
+    if (!mLib.Valid() && std::string_view(libName) == "libEGL.so") {
+        std::string ignored;
+        mLib.Open("libEGL.so.1", searchPaths, &ignored);
+    }
+#endif
     if (!mLib.Valid() && !mLib.Open(libName, searchPaths, &err)) {
         return DAWN_VALIDATION_ERROR("Failed to load %s: \"%s\".", libName, err.c_str());
     }
