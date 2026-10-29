@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <limits>
 #include <utility>
+#include <vector>
 
 #include "src/dawn/common/Constants.h"
 #include "src/dawn/common/Math.h"
@@ -629,16 +630,29 @@ MaybeError Texture::ClearTexture(const OpenGLFunctions& gl,
         descriptor.usage = wgpu::BufferUsage::CopySrc;
         descriptor.size = bufferSize;
 
-        // We don't count the lazy clear of srcBuffer because it is an internal buffer.
-        // TODO(natlee@microsoft.com): use Dynamic Uploader here for temp buffer
+        // Mesa crocus can't upload into a compressed texture from a buffer object
+        // (GLUploadCompressedFromClientMemory): clear it from client memory instead.
+        const bool fromClientMemory =
+            GetFormat().isCompressed &&
+            device->IsToggleEnabled(Toggle::GLUploadCompressedFromClientMemory);
+        std::vector<uint8_t> clientData;
+        const void* srcData = nullptr;
         Ref<Buffer> srcBuffer;
-        DAWN_TRY_ASSIGN(srcBuffer, Buffer::CreateInternalBuffer(device, &descriptor, false));
+        if (fromClientMemory) {
+            clientData.assign(bufferSize, clearColor);
+            srcData = clientData.data();
+        } else {
+            // We don't count the lazy clear of srcBuffer because it is an internal buffer.
+            // TODO(natlee@microsoft.com): use Dynamic Uploader here for temp buffer
+            DAWN_TRY_ASSIGN(srcBuffer, Buffer::CreateInternalBuffer(device, &descriptor, false));
 
-        // Fill the buffer with clear color
-        DAWN_UNSAFE_TODO(memset(srcBuffer->GetMappedRange(0, bufferSize), clearColor, bufferSize));
-        DAWN_TRY(srcBuffer->Unmap());
+            // Fill the buffer with clear color
+            DAWN_UNSAFE_TODO(
+                memset(srcBuffer->GetMappedRange(0, bufferSize), clearColor, bufferSize));
+            DAWN_TRY(srcBuffer->Unmap());
 
-        DAWN_GL_TRY(gl, BindBuffer(GL_PIXEL_UNPACK_BUFFER, srcBuffer->GetHandle()));
+            DAWN_GL_TRY(gl, BindBuffer(GL_PIXEL_UNPACK_BUFFER, srcBuffer->GetHandle()));
+        }
         for (uint32_t level = range.baseMipLevel; level < range.baseMipLevel + range.levelCount;
              ++level) {
             TextureCopy textureCopy;
@@ -664,10 +678,12 @@ MaybeError Texture::ClearTexture(const OpenGLFunctions& gl,
                 }
 
                 textureCopy.origin.z = TexelCount{layer};
-                DAWN_TRY(DoTexSubImage(gl, textureCopy, nullptr, dataLayout, mipSize));
+                DAWN_TRY(DoTexSubImage(gl, textureCopy, srcData, dataLayout, mipSize));
             }
         }
-        DAWN_GL_TRY(gl, BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0));
+        if (!fromClientMemory) {
+            DAWN_GL_TRY(gl, BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0));
+        }
     }
     if (clearValue == TextureBase::ClearValue::Zero) {
         SetIsSubresourceContentInitialized(true, range);

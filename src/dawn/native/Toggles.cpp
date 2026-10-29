@@ -684,6 +684,13 @@ static constexpr ToggleEnumAndInfoList kToggleNameAndInfoList = {{
       "while the WebGPU CTS is expecting n. Scale the depth bias value by multiple 0.5 on certain "
       "backends to achieve conformant result.",
       "https://crbug.com/42241017", ToggleStage::Device}},
+    {Toggle::GLUploadCompressedFromClientMemory,
+     {"gl_upload_compressed_from_client_memory",
+      "Upload compressed texture data (buffer-to-texture copies and lazy clears) from client "
+      "memory instead of a bound GL_PIXEL_UNPACK_BUFFER. Mesa's crocus driver (Intel gen4-7.5) "
+      "advertises PBO uploads through an uncompressed view of a compressed texture but cannot "
+      "create that surface, and Mesa 25.2 then draws with a NULL color buffer and crashes.",
+      "https://github.com/Odrannnn/MetroidPrimePort/issues/202", ToggleStage::Device}},
     {Toggle::GLForceES31AndNoExtensions,
      {"gl_force_es_31_and_no_extensions",
       "Force EGLContext creation with the minimal ES version and no extensions required by the "

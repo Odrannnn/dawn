@@ -164,6 +164,7 @@ enum class Toggle {
     D3D12ForceStencilComponentReplicateSwizzle,
     D3D12ExpandShaderResourceStateTransitionsToCopySource,
     GLDepthBiasModifier,
+    GLUploadCompressedFromClientMemory,
     GLForceES31AndNoExtensions,
     GLForceDesktopGL33,
     VulkanMonolithicPipelineCache,

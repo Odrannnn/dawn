@@ -102,6 +102,21 @@ bool IsSwiftShader(std::string_view renderer) {
     return renderer.find("SwiftShader") != std::string::npos;
 }
 
+// Mesa names the GPU generation in GL_RENDERER, e.g. "Mesa Intel(R) HD Graphics 3000 (SNB GT2)".
+// Gen4 through 7.5 run on crocus; gen8 and later on iris.
+bool IsMesaCrocus(std::string_view renderer) {
+    if (renderer.find("Mesa Intel") == std::string::npos) {
+        return false;
+    }
+    for (std::string_view gen : {"(BW", "(CL", "(ELK", "(CTG", "(ILK", "(SNB", "(IVB", "(BYT",
+                                 "(HSW"}) {
+        if (renderer.find(gen) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
 }  // anonymous namespace
 
 // static
@@ -605,6 +620,10 @@ void PhysicalDevice::SetupBackendDeviceToggles(dawn::platform::Platform* platfor
     deviceToggles->Default(Toggle::GLDepthBiasModifier, gl.GetVersion().IsDesktop() ||
                                                             IsANGLEDesktopGL(mName) ||
                                                             IsSwiftShader(mName));
+
+    // Mesa crocus cannot do PBO uploads into compressed textures (see the toggle).
+    deviceToggles->Default(Toggle::GLUploadCompressedFromClientMemory,
+                           gl.GetVersion().IsDesktop() && IsMesaCrocus(mName));
 
     // (crbug.com/379805731): PowerVR GE8300 GLES 3.1 driver cannot compile .length() on SSBO
     // dynamic array.

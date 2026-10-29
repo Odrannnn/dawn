@@ -983,8 +983,6 @@ MaybeError CommandBuffer::Execute(const OpenGLFunctions& gl) {
                     DAWN_TRY(texture->EnsureSubresourceContentInitialized(gl, range));
                 }
 
-                DAWN_GL_TRY(gl, BindBuffer(GL_PIXEL_UNPACK_BUFFER, buffer->GetHandle()));
-
                 // TODO(crbug.com/424536624): Replace TexelCopyBufferLayout with BufferCopy
                 const TypedTexelBlockInfo& blockInfo = GetBlockInfo(dst);
                 TexelCopyBufferLayout dataLayout;
@@ -993,9 +991,30 @@ MaybeError CommandBuffer::Execute(const OpenGLFunctions& gl) {
                     checked_cast<uint32_t>(blockInfo.ToBytes(src.blocksPerRow));
                 dataLayout.rowsPerImage = dchecked_cast<uint32_t>(src.rowsPerImage);
 
-                DAWN_TRY(DoTexSubImage(gl, dst, reinterpret_cast<void*>(src.offset), dataLayout,
-                                       copy->copySize.ToExtent3D()));
-                DAWN_GL_TRY(gl, BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0));
+                if (texture->GetFormat().isCompressed &&
+                    GetDevice()->IsToggleEnabled(Toggle::GLUploadCompressedFromClientMemory)) {
+                    // Read the source range back and upload it from client memory. glGetBufferSubData
+                    // waits for earlier GPU writes to the buffer, as the PBO upload would.
+                    const uint64_t available = buffer->GetAllocatedSize() - src.offset;
+                    const uint64_t needed =
+                        uint64_t(dataLayout.bytesPerRow) * dataLayout.rowsPerImage *
+                        static_cast<uint64_t>(copy->copySize.depthOrArrayLayers);
+                    std::vector<uint8_t> staging(
+                        checked_cast<size_t>(std::min(available, needed)));
+                    DAWN_GL_TRY(gl, BindBuffer(GL_COPY_READ_BUFFER, buffer->GetHandle()));
+                    DAWN_GL_TRY(gl, GetBufferSubData(GL_COPY_READ_BUFFER,
+                                                     checked_cast<GLintptr>(src.offset),
+                                                     checked_cast<GLsizeiptr>(staging.size()),
+                                                     staging.data()));
+                    DAWN_GL_TRY(gl, BindBuffer(GL_COPY_READ_BUFFER, 0));
+                    DAWN_TRY(DoTexSubImage(gl, dst, staging.data(), dataLayout,
+                                           copy->copySize.ToExtent3D()));
+                } else {
+                    DAWN_GL_TRY(gl, BindBuffer(GL_PIXEL_UNPACK_BUFFER, buffer->GetHandle()));
+                    DAWN_TRY(DoTexSubImage(gl, dst, reinterpret_cast<void*>(src.offset),
+                                           dataLayout, copy->copySize.ToExtent3D()));
+                    DAWN_GL_TRY(gl, BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0));
+                }
 
                 buffer->TrackUsage();
                 break;
