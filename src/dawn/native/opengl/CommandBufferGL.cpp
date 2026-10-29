@@ -843,7 +843,8 @@ void SetPrimitiveRestart(const OpenGLFunctions& gl, GLenum topology, GLenum inde
 MaybeError RecordWriteTimestamp(const OpenGLFunctions& gl,
                                 QuerySetBase* querySet,
                                 QueryIndex queryIndex) {
-    DAWN_GL_TRY(gl, QueryCounter(ToBackend(querySet)->Get(queryIndex), GL_TIMESTAMP));
+    DAWN_GL_TRY(gl, QueryCounter(ToBackend(querySet)->BeginTimestampWrite(queryIndex),
+                                 GL_TIMESTAMP));
     return {};
 }
 
@@ -1233,6 +1234,21 @@ MaybeError CommandBuffer::Execute(const OpenGLFunctions& gl) {
                 size_t size = ToQueryStorageSize(cmd->queryCount);
                 DAWN_TRY(
                     destination->EnsureDataInitializedAsDestination(cmd->destinationOffset, size));
+
+                if (querySet->GetQueryType() == wgpu::QueryType::Timestamp &&
+                    !QuerySet::CanResolveTimestampsOnGPU(gl)) {
+                    // No query buffer objects: upload results that are already available,
+                    // from an earlier generation if need be (see QuerySet).
+                    std::vector<uint64_t> values(uint32_t{cmd->queryCount});
+                    DAWN_TRY(querySet->ReadTimestampsWithoutWaiting(gl, cmd->firstQuery,
+                                                                    cmd->queryCount,
+                                                                    values.data()));
+                    DAWN_GL_TRY(gl, BindBuffer(GL_ARRAY_BUFFER, destination->GetHandle()));
+                    DAWN_GL_TRY(gl, BufferSubData(GL_ARRAY_BUFFER,
+                                                  checked_cast<GLintptr>(cmd->destinationOffset),
+                                                  checked_cast<GLsizeiptr>(size), values.data()));
+                    break;
+                }
 
                 if (querySet->GetQueryType() == wgpu::QueryType::Timestamp) {
                     // Zero the range so queries never written read 0, then have the GPU copy

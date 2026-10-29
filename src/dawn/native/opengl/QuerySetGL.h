@@ -36,21 +36,47 @@
 namespace dawn::native::opengl {
 
 class Device;
+struct OpenGLFunctions;
 
 class QuerySet final : public QuerySetBase {
   public:
     static ResultOrError<Ref<QuerySet>> Create(Device* device,
                                                const QuerySetDescriptor* descriptor);
 
+    // Whether timestamp results can be copied into a buffer on the GPU (GL_QUERY_BUFFER, GL 4.4
+    // or GL_ARB_query_buffer_object). Without it, timestamp sets keep kTimestampGenerations sets
+    // of GL queries and resolves report the newest generation whose results are all available,
+    // a frame or two late, so the CPU never waits for the GPU.
+    static bool CanResolveTimestampsOnGPU(const OpenGLFunctions& gl);
+
     GLuint Get(QueryIndex index) const;
-    const ityp::vector<QueryIndex, GLuint>& GetQueries() const;
+    const std::vector<GLuint>& GetQueries() const;
+
+    // The GL query a timestamp write at `index` goes to.
+    GLuint BeginTimestampWrite(QueryIndex index);
+    // Reads `count` timestamps from `first` without waiting, as described above. Queries not
+    // written in the reported generation read 0; all read 0 while no generation is complete.
+    MaybeError ReadTimestampsWithoutWaiting(const OpenGLFunctions& gl,
+                                            QueryIndex first,
+                                            QueryIndex count,
+                                            uint64_t* values);
 
   private:
+    static constexpr uint32_t kTimestampGenerations = 4;
+
     QuerySet(Device* device, const QuerySetDescriptor* descriptor);
 
     ~QuerySet() override;
     void DestroyImpl(DestroyReason reason) override;
-    ityp::vector<QueryIndex, GLuint> mQueries;
+
+    size_t Slot(uint32_t generation, QueryIndex index) const;
+
+    // mGenerations sets of GetQueryCount() queries, generation-major. Sized on the GL thread.
+    std::vector<GLuint> mQueries;
+    std::vector<bool> mWritten;
+    uint32_t mGenerations = 1;
+    uint32_t mWriteGeneration = 0;
+    bool mResolvedSinceWrite = false;
 };
 
 }  // namespace dawn::native::opengl

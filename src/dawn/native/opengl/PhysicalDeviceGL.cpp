@@ -246,10 +246,9 @@ void PhysicalDevice::InitializeSupportedFeaturesImpl() {
     EnableFeature(Feature::StaticSamplers);
 
     // TimestampQuery: glQueryCounter(GL_TIMESTAMP) (GL 3.3), resolved on the GPU through a query
-    // buffer (GL 4.4 or ARB_query_buffer_object) so reading the results never stalls the CPU.
-    if (mFunctions.IsAtLeastGL(4, 4) ||
-        (mFunctions.IsAtLeastGL(3, 3) &&
-         mFunctions.IsGLExtensionSupported("GL_ARB_query_buffer_object"))) {
+    // buffer (GL 4.4 or ARB_query_buffer_object), or else from results that are already available
+    // (see QuerySet), so reading the results never stalls the CPU.
+    if (mFunctions.IsAtLeastGL(3, 3)) {
         EnableFeature(Feature::TimestampQuery);
     }
 

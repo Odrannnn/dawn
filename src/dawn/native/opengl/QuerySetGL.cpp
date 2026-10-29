@@ -29,6 +29,7 @@
 
 #include <utility>
 
+#include "src/dawn/common/Range.h"
 #include "src/dawn/native/opengl/DeviceGL.h"
 #include "src/dawn/native/opengl/UtilsGL.h"
 
@@ -39,19 +40,26 @@ ResultOrError<Ref<QuerySet>> QuerySet::Create(Device* device,
                                               const QuerySetDescriptor* descriptor) {
     Ref<QuerySet> querySet = AcquireRef(new QuerySet(device, descriptor));
 
-    if (!querySet->mQueries.empty()) {
-        DAWN_TRY(device->EnqueueGL(
-            [querySet, count = descriptor->count](const OpenGLFunctions& gl) -> MaybeError {
-                DAWN_GL_TRY(gl, GenQueries(count, querySet->mQueries.data()));
-                return {};
-            }));
+    if (uint32_t{querySet->GetQueryCount()} > 0) {
+        DAWN_TRY(device->EnqueueGL([querySet](const OpenGLFunctions& gl) -> MaybeError {
+            if (querySet->GetQueryType() == wgpu::QueryType::Timestamp &&
+                !CanResolveTimestampsOnGPU(gl)) {
+                querySet->mGenerations = kTimestampGenerations;
+            }
+            const size_t count =
+                size_t{uint32_t{querySet->GetQueryCount()}} * querySet->mGenerations;
+            querySet->mQueries.resize(count);
+            querySet->mWritten.assign(count, false);
+            DAWN_GL_TRY(gl, GenQueries(checked_cast<GLsizei>(count), querySet->mQueries.data()));
+            return {};
+        }));
     }
 
     return std::move(querySet);
 }
 
 QuerySet::QuerySet(Device* device, const QuerySetDescriptor* descriptor)
-    : QuerySetBase(device, descriptor), mQueries(GetQueryCount()) {}
+    : QuerySetBase(device, descriptor) {}
 
 QuerySet::~QuerySet() = default;
 
@@ -62,21 +70,83 @@ void QuerySet::DestroyImpl(DestroyReason reason) {
         IgnoreErrors(device->EnqueueDestroyGL(
             this, &QuerySet::GetQueries, reason,
             [](const OpenGLFunctions& gl,
-               const ityp::vector<QueryIndex, GLuint>& queries) -> MaybeError {
-                DAWN_GL_TRY_IGNORE_ERRORS(gl,
-                                          DeleteQueries(uint32_t{queries.size()}, queries.data()));
+               const std::vector<GLuint>& queries) -> MaybeError {
+                DAWN_GL_TRY_IGNORE_ERRORS(
+                    gl, DeleteQueries(checked_cast<GLsizei>(queries.size()), queries.data()));
                 return {};
             }));
     }
     QuerySetBase::DestroyImpl(reason);
 }
 
-GLuint QuerySet::Get(QueryIndex index) const {
-    return mQueries[index];
+// static
+bool QuerySet::CanResolveTimestampsOnGPU(const OpenGLFunctions& gl) {
+    return gl.IsAtLeastGL(4, 4) || gl.IsGLExtensionSupported("GL_ARB_query_buffer_object");
 }
 
-const ityp::vector<QueryIndex, GLuint>& QuerySet::GetQueries() const {
+size_t QuerySet::Slot(uint32_t generation, QueryIndex index) const {
+    return size_t{generation} * uint32_t{GetQueryCount()} + uint32_t{index};
+}
+
+GLuint QuerySet::Get(QueryIndex index) const {
+    return mQueries[Slot(mWriteGeneration, index)];
+}
+
+const std::vector<GLuint>& QuerySet::GetQueries() const {
     return mQueries;
+}
+
+GLuint QuerySet::BeginTimestampWrite(QueryIndex index) {
+    if (mResolvedSinceWrite) {
+        // The first write after a resolve starts the next frame's generation.
+        mResolvedSinceWrite = false;
+        mWriteGeneration = (mWriteGeneration + 1) % mGenerations;
+        for (QueryIndex i : Range(GetQueryCount())) {
+            mWritten[Slot(mWriteGeneration, i)] = false;
+        }
+    }
+    mWritten[Slot(mWriteGeneration, index)] = true;
+    return Get(index);
+}
+
+MaybeError QuerySet::ReadTimestampsWithoutWaiting(const OpenGLFunctions& gl,
+                                                  QueryIndex first,
+                                                  QueryIndex count,
+                                                  uint64_t* values) {
+    mResolvedSinceWrite = true;
+    for (uint32_t age = 0; age < mGenerations; ++age) {
+        const uint32_t generation = (mWriteGeneration + mGenerations - age) % mGenerations;
+        bool complete = true;
+        for (QueryIndex i : Range(count)) {
+            const size_t slot = Slot(generation, first + i);
+            if (!mWritten[slot]) {
+                continue;
+            }
+            GLuint available = GL_FALSE;
+            DAWN_GL_TRY(gl, GetQueryObjectuiv(mQueries[slot], GL_QUERY_RESULT_AVAILABLE,
+                                              &available));
+            if (available == GL_FALSE) {
+                complete = false;
+                break;
+            }
+        }
+        if (!complete) {
+            continue;
+        }
+        for (QueryIndex i : Range(count)) {
+            const size_t slot = Slot(generation, first + i);
+            GLuint64 value = 0;
+            if (mWritten[slot]) {
+                DAWN_GL_TRY(gl, GetQueryObjectui64v(mQueries[slot], GL_QUERY_RESULT, &value));
+            }
+            DAWN_UNSAFE_TODO(values[uint32_t{i}]) = value;
+        }
+        return {};
+    }
+    for (QueryIndex i : Range(count)) {
+        DAWN_UNSAFE_TODO(values[uint32_t{i}]) = 0;
+    }
+    return {};
 }
 
 }  // namespace dawn::native::opengl
